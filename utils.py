@@ -96,6 +96,8 @@ def prepare_flight_features(df):
         Data with additional features
     """
     df = df.copy()
+
+    df = df[df["FlightDate"].notna()].copy() # aquesta linea la estic afegint per un error que tinc el 4 del 12 a les 14:00
     
     # Temporal features
     df['Year'] = df['FlightDate'].dt.year
@@ -316,3 +318,43 @@ def format_metric(value, metric_type='percentage', decimals=1):
     else:
         return f"{value:.{decimals}f}"
 
+
+
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, roc_auc_score
+import joblib
+import os
+
+
+@st.cache_data
+def get_model_dataset(max_rows_per_file=100000, random_state=42):
+    """
+    Load data, engineer features and return a clean dataset
+    for ML modelling (non-cancelled & non-diverted flights).
+    """
+    # 1) Load sample of all years
+    df_raw = load_flight_data(
+        max_rows_per_file=max_rows_per_file,
+        random_state=random_state
+    )
+
+    # 2) Add engineered features
+    df = prepare_flight_features(df_raw)
+
+    # 3) Keep only flights with valid arrival delay info
+    df = df[(df["Cancelled"] == False) & (df["Diverted"] == False)]
+
+    # 4) Drop rows with missing core columns
+    required_cols = [
+        "Airline", "Origin", "Dest",
+        "DepTimeOfDay", "DayOfWeekName", "MonthName",
+        "DepHour", "Distance", "IsArrDelayed"
+    ]
+    df = df.dropna(subset=required_cols)
+
+    return df

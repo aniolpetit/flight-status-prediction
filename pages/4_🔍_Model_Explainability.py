@@ -1,142 +1,175 @@
 """
-Model Explainability Page - Understanding Predictions
-(Placeholder - To be implemented)
+Model Explainability Page - SHAP-based explanations
+for the RandomForest arrival delay model.
 """
 
+import numpy as np
+import pandas as pd
 import streamlit as st
+import joblib
+import shap
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Model Explainability", page_icon="🔍", layout="wide")
+from utils import get_model_dataset  # función que definimos antes en utils.py
+
 
 st.title("🔍 Model Explainability")
-st.markdown("**Understanding what drives the model's predictions**")
+st.markdown(
+    "Understand **which factors drive the model's predictions** for arrival delays "
+    "(> 15 minutes)."
+)
 
 st.markdown("---")
 
-st.info("""
-### 🚧 Coming Soon!
 
-This page will provide deep insights into how the ML model makes its predictions.
+# -----------------------------
+# Load model & data
+# -----------------------------
+@st.cache_resource
+def load_trained_model():
+    model_path = "models/arrival_delay_model.pkl"
+    clf = joblib.load(model_path)
+    return clf
 
-### 🎯 Planned Features:
 
-#### 1. **Local Explanations (SHAP)**
-- For any single prediction, see which features contributed most
-- Horizontal bar charts showing positive/negative impact
-- Natural language explanations:
-  - *"Flying at 7 PM instead of 10 AM increases delay risk by 8%"*
-  - *"This airline has historically 12% more delays on this route"*
+@st.cache_data
+def load_shap_dataset(max_rows_per_file: int = 40_000, random_state: int = 42):
+    """
+    Load a clean dataset for SHAP analysis.
+    We reuse the same feature set as in training.
+    """
+    df = get_model_dataset(
+        max_rows_per_file=max_rows_per_file,
+        random_state=random_state,
+    )
 
-#### 2. **Global Feature Importance**
-- Which features matter most overall?
-- SHAP beeswarm plots
-- Feature importance rankings
-- Interaction effects between features
+    feature_cols_cat = [
+        "Airline",
+        "Origin",
+        "Dest",
+        "DepTimeOfDay",
+        "DayOfWeekName",
+        "MonthName",
+    ]
+    feature_cols_num = ["DepHour", "Distance"]
 
-#### 3. **What-If Scenarios**
-- Interactive sliders to change input features
-- See how predictions change in real-time
-- Counterfactual explanations:
-  - *"If you changed airline from A to B, delay probability would drop from 30% to 18%"*
-- Side-by-side comparisons with updated SHAP values
+    X = df[feature_cols_cat + feature_cols_num]
+    y = df["IsArrDelayed"].astype(int)
 
-#### 4. **Cohort Analysis**
-- Filter by airline, airport, time period
-- Compare feature importance across cohorts
-- *"What drives delays for Southwest vs Delta?"*
-- *"Are weekend delays caused by different factors than weekday delays?"*
+    # To keep SHAP computations reasonable, sample a subset
+    if len(X) > 3000:
+        X_sample = X.sample(3000, random_state=random_state)
+    else:
+        X_sample = X.copy()
 
-#### 5. **Partial Dependence Plots**
-- See how delay probability changes with each feature
-- Smooth curves showing non-linear relationships
-- Confidence intervals
+    return X_sample, y.loc[X_sample.index], feature_cols_cat, feature_cols_num
 
-#### 6. **Decision Trees Visualization**
-- For tree-based models, show actual decision paths
-- Highlight the path taken for a specific prediction
-- Interactive tree exploration
 
-### 📊 Visualization Types:
+with st.spinner("Loading model and data for explainability..."):
+    clf = load_trained_model()
+    X_sample, y_sample, feature_cols_cat, feature_cols_num = load_shap_dataset()
 
-We'll use multiple visualization approaches:
-- **SHAP waterfall plots**: Show cumulative feature contributions
-- **SHAP force plots**: Push/pull visualization of features
-- **SHAP beeswarm plots**: Global feature importance with value distribution
-- **Partial dependence plots**: Feature-outcome relationships
-- **ICE plots**: Individual conditional expectation curves
 
-### 🎓 Educational Component:
+# -----------------------------
+# Create SHAP explainer
+# -----------------------------
+@st.cache_resource
+def create_explainer(model, X_background):
+    """
+    We create a SHAP Explainer using the model's predict_proba function.
+    This works with a sklearn Pipeline (preprocessing + model).
+    """
+    explainer = shap.Explainer(model.predict_proba, X_background, feature_names=X_background.columns)
+    return explainer
 
-Each visualization will include:
-- Clear explanations of what it shows
-- How to interpret it
-- What actions you can take based on it
-- Limitations and caveats
-""")
 
-st.markdown("---")
+with st.spinner("Computing SHAP values (first time may take a bit)..."):
+    explainer = create_explainer(clf, X_sample)
+    shap_values = explainer(X_sample)  # shape: [n_samples, n_classes, n_features]
 
-# Placeholder visualization
-st.markdown("### 🎨 Preview: Explainability Components")
 
-col1, col2 = st.columns(2)
+st.markdown("## 🌍 Global feature importance")
 
-with col1:
-    st.markdown("""
-    #### Local Explanation Example
-    
-    **For Flight AA123 (JFK → LAX, 6 PM departure):**
-    
-    Predicted delay probability: **35%**
-    
-    **Feature Contributions:**
-    - ⬆️ Departure hour (18:00): +12%
-    - ⬆️ Day (Friday): +5%
-    - ⬆️ Origin airport congestion: +8%
-    - ⬇️ Airline reliability: -6%
-    - ⬇️ Season (September): -3%
-    
-    **Recommendation:** Consider morning flight for 18% better on-time odds
-    """)
+st.markdown(
+    """
+    These plots show **which features matter most overall** for predicting whether a flight
+    will arrive more than 15 minutes late (class 1 = delayed).
+    """
+)
 
-with col2:
-    st.markdown("""
-    #### Global Importance Example
-    
-    **Top 10 Most Important Features:**
-    
-    1. Scheduled departure time (18.2%)
-    2. Airline carrier (14.7%)
-    3. Day of week (11.3%)
-    4. Origin airport (9.8%)
-    5. Month/Season (8.1%)
-    6. Route distance (6.4%)
-    7. Destination airport (5.9%)
-    8. Historical delays (5.2%)
-    9. Time to departure (4.8%)
-    10. Weather conditions (4.1%)
-    """)
+# class 1 (delayed) shap values
+shap_delayed = shap_values[:, 1, :]
+
+# --- Bar plot (mean |SHAP|)
+fig_bar, ax_bar = plt.subplots(figsize=(8, 5))
+shap.plots.bar(shap_delayed, show=False)
+st.pyplot(fig_bar)
 
 st.markdown("---")
 
-st.markdown("""
-### 🧠 Why Explainability Matters
+# -----------------------------
+# Local explanation
+# -----------------------------
+st.markdown("## ✈️ Local explanation for a specific flight")
 
-**For Passengers:**
-- Understand *why* a flight might be delayed
-- Make informed booking decisions
-- Know what factors are within their control
+st.markdown(
+    "Select one of the sampled flights and see **which features pushed the prediction "
+    "towards delay vs on-time**."
+)
 
-**For Airlines:**
-- Identify systematic issues
-- Prioritize operational improvements
-- Validate model predictions against domain knowledge
+# choose an index
+idx = st.slider(
+    "Select sample index",
+    min_value=0,
+    max_value=len(X_sample) - 1,
+    value=0,
+    step=1,
+)
 
-**For Regulators:**
-- Ensure fair and unbiased predictions
-- Understand systemic delay patterns
-- Guide policy decisions
-""")
+x_row = X_sample.iloc[idx : idx + 1]
+y_row = y_sample.iloc[idx]
+shap_row = shap_delayed[idx]
+
+# Show raw features
+st.markdown("### Flight features")
+st.dataframe(x_row)
+
+# Prediction + probas for this row
+proba = float(clf.predict_proba(x_row)[0, 1])
+pred_label = int(clf.predict(x_row)[0])
+
+st.markdown(
+    f"""
+    **Model output for this flight:**
+    - Predicted probability of delay > 15 min: **{proba * 100:.1f}%**
+    - Predicted class: **{"Delayed" if pred_label == 1 else "Not delayed"}**
+    - True label in data: **{"Delayed" if y_row == 1 else "Not delayed"}**
+    """
+)
+
+st.markdown("### 🔍 SHAP waterfall plot (local contribution of each feature)")
+
+fig_wf, ax_wf = plt.subplots(figsize=(8, 5))
+shap.plots.waterfall(shap_row, max_display=10, show=False)
+st.pyplot(fig_wf)
+
+st.markdown(
+    """
+    **How to read this plot:**
+    - The grey baseline on the left is the model's average output (log-odds) for the dataset.  
+    - Red bars push the prediction **towards higher delay probability**,  
+      blue bars push it **towards lower delay probability**.  
+    - The length of each bar shows **how strong the contribution** of that feature is.
+    """
+)
 
 st.markdown("---")
-st.warning("👈 **First**, we'll build and train the model, then add explainability features!")
 
+st.info(
+    """
+    In your report and presentation, you can highlight:
+    - Which features are globally most important (airline, route, time of day, etc.).
+    - For individual flights, which conditions (airport, departure time, weekday...) drove
+      the model to predict a high or low delay risk.
+    """
+)
