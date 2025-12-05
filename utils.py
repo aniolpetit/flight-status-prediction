@@ -70,7 +70,7 @@ def prepare_flight_features(df):
     Parameters:
     -----------
     df : pd.DataFrame
-        Raw flight data (can come from load_flight_data or raw CSVs)
+        Raw flight data
         
     Returns:
     --------
@@ -79,42 +79,35 @@ def prepare_flight_features(df):
     """
     df = df.copy()
 
-    # --- 1) Asegurar tipos correctos en columnas clave ---
-
-    # FlightDate -> datetime
-    df["FlightDate"] = pd.to_datetime(df["FlightDate"], errors="coerce")
-    df = df[df["FlightDate"].notna()].copy()
-
-    # CRSDepTime -> numérico (HHMM) y sin NaN
-    df["CRSDepTime"] = pd.to_numeric(df["CRSDepTime"], errors="coerce")
-    df = df[df["CRSDepTime"].notna()].copy()
-
-    # --- 2) Features temporales ---
-    df["Year"] = df["FlightDate"].dt.year
-    df["Month"] = df["FlightDate"].dt.month
-    df["MonthName"] = df["FlightDate"].dt.month_name()
-    df["DayOfWeek"] = df["FlightDate"].dt.dayofweek
-    df["DayOfWeekName"] = df["FlightDate"].dt.day_name()
-    df["WeekOfYear"] = df["FlightDate"].dt.isocalendar().week.astype(int)
-
-    # --- 3) Hora de salida y tramo horario ---
-    df["DepHour"] = (df["CRSDepTime"] // 100).astype(int)
-
-    df["DepTimeOfDay"] = pd.cut(
-        df["DepHour"],
+    df = df[df["FlightDate"].notna()].copy() # aquesta linea la estic afegint per un error que tinc el 4 del 12 a les 14:00
+    
+    # Temporal features
+    df['Year'] = df['FlightDate'].dt.year
+    df['Month'] = df['FlightDate'].dt.month
+    df['MonthName'] = df['FlightDate'].dt.month_name()
+    df['DayOfWeek'] = df['FlightDate'].dt.dayofweek
+    df['DayOfWeekName'] = df['FlightDate'].dt.day_name()
+    df['WeekOfYear'] = df['FlightDate'].dt.isocalendar().week.astype(int)
+    
+    # Hour of departure
+    df['DepHour'] = (df['CRSDepTime'] // 100).astype(int)
+    
+    # Time of day categories
+    df['DepTimeOfDay'] = pd.cut(
+        df['DepHour'],
         bins=[0, 6, 12, 18, 24],
-        labels=["Night (0-6)", "Morning (6-12)", "Afternoon (12-18)", "Evening (18-24)"],
-        include_lowest=True,
+        labels=['Night (0-6)', 'Morning (6-12)', 'Afternoon (12-18)', 'Evening (18-24)'],
+        include_lowest=True
     )
-
-    # --- 4) Categorías de delay ---
-    df["ArrDelayCategory"] = df["ArrDelayMinutes"].apply(categorize_delay)
-    df["DepDelayCategory"] = df["DepDelayMinutes"].apply(categorize_delay)
-
-    # --- 5) Flags binarios de delay (> 15 min) ---
-    df["IsArrDelayed"] = (df["ArrDelayMinutes"] > 15).astype(int)
-    df["IsDepDelayed"] = (df["DepDelayMinutes"] > 15).astype(int)
-
+    
+    # Delay categories
+    df['ArrDelayCategory'] = df['ArrDelayMinutes'].apply(categorize_delay)
+    df['DepDelayCategory'] = df['DepDelayMinutes'].apply(categorize_delay)
+    
+    # Delay flags
+    df['IsArrDelayed'] = (df['ArrDelayMinutes'] > 15).astype(int)
+    df['IsDepDelayed'] = (df['DepDelayMinutes'] > 15).astype(int)
+    
     return df
 
 

@@ -125,12 +125,13 @@ with st.spinner("Loading model and metadata..."):
 # -----------------------------
 # Tabs for different sections
 # -----------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🚀 Make a Prediction",
     "📊 Model Performance", 
     "🎯 Confusion Matrix",
     "📈 ROC Curve",
-    "⚖️ Class Balance"
+    "⚖️ Class Balance",
+    "🎚️ Threshold Analysis"
 ])
 
 
@@ -387,37 +388,109 @@ with tab2:
     
     if metrics is None:
         st.warning("Metrics not available. Please re-train the model.")
+    elif not isinstance(metrics, dict) or 'accuracy_default_thr' not in metrics:
+        st.warning("Metrics file is incomplete or corrupted. Please re-train the model.")
     else:
+        # Show threshold comparison
+        st.subheader("📊 Performance at Different Thresholds")
+        
+        default_thr = metrics.get('default_threshold', 0.5)
+        high_recall_thr = metrics.get('high_recall_threshold', 0.4)
+        
+        col_info, col_default, col_high = st.columns([1, 1.5, 1.5])
+        
+        with col_info:
+            st.markdown("""
+            **Threshold Selection:**
+            
+            - **Default (0.5)**: Balanced precision/recall
+            - **High-Recall (0.4)**: Catches more delays
+            """)
+        
+        # Default threshold metrics
+        with col_default:
+            st.markdown(f"### Default Threshold ({default_thr:.2f})")
+            accuracy_default = metrics.get('accuracy_default_thr', 0.0)
+            report_default = metrics.get('classification_report_default_thr', {})
+            
+            if isinstance(report_default, dict) and '1' in report_default:
+                prec_default = report_default['1'].get('precision', 0.0)
+                rec_default = report_default['1'].get('recall', 0.0)
+                f1_default = report_default['1'].get('f1-score', 0.0)
+            else:
+                prec_default = rec_default = f1_default = 0.0
+            
+            st.metric("Accuracy", f"{accuracy_default:.1%}")
+            st.metric("Precision (Delayed)", f"{prec_default:.1%}")
+            st.metric("Recall (Delayed)", f"{rec_default:.1%}")
+            st.metric("F1-Score (Delayed)", f"{f1_default:.3f}")
+        
+        # High-recall threshold metrics
+        with col_high:
+            st.markdown(f"### High-Recall Threshold ({high_recall_thr:.2f})")
+            
+            # Get metrics for high-recall threshold from threshold_metrics
+            threshold_metrics = metrics.get('threshold_metrics', [])
+            high_recall_metrics = None
+            for tm in threshold_metrics:
+                if abs(tm.get('threshold', 0) - high_recall_thr) < 0.01:
+                    high_recall_metrics = tm
+                    break
+            
+            if high_recall_metrics:
+                st.metric("Accuracy", f"{high_recall_metrics.get('accuracy', 0.0):.1%}")
+                st.metric("Precision (Delayed)", f"{high_recall_metrics.get('precision_1', 0.0):.1%}")
+                st.metric("Recall (Delayed)", f"{high_recall_metrics.get('recall_1', 0.0):.1%}")
+                st.metric("F1-Score (Delayed)", f"{high_recall_metrics.get('f1_1', 0.0):.3f}")
+            else:
+                st.warning("High-recall metrics not available")
+        
+        st.markdown("---")
+        
+        # Overall metrics
+        st.subheader("📈 Overall Model Metrics")
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            st.metric("Accuracy", f"{metrics['accuracy']:.1%}")
+            accuracy = metrics.get('accuracy_default_thr', 0.0)
+            st.metric("Accuracy", f"{accuracy:.1%}")
             
         with col2:
-            st.metric("ROC-AUC", f"{metrics['roc_auc']:.3f}")
+            roc_auc = metrics.get('roc_auc', 0.0)
+            st.metric("ROC-AUC", f"{roc_auc:.3f}")
             
         with col3:
-            precision_delayed = metrics['classification_report']['1']['precision']
+            report_default = metrics.get('classification_report_default_thr', {})
+            if isinstance(report_default, dict) and '1' in report_default:
+                precision_delayed = report_default['1'].get('precision', 0.0)
+            else:
+                precision_delayed = 0.0
             st.metric("Precision (Delayed)", f"{precision_delayed:.1%}")
             
         with col4:
-            recall_delayed = metrics['classification_report']['1']['recall']
+            report_default = metrics.get('classification_report_default_thr', {})
+            if isinstance(report_default, dict) and '1' in report_default:
+                recall_delayed = report_default['1'].get('recall', 0.0)
+            else:
+                recall_delayed = 0.0
             st.metric("Recall (Delayed)", f"{recall_delayed:.1%}")
         
         st.markdown("---")
         
-        # Classification report
-        st.subheader("📋 Detailed Classification Report")
+        # Classification report (default threshold)
+        st.subheader("📋 Detailed Classification Report (Default Threshold)")
         
-        report = metrics['classification_report']
-        
-        report_df = pd.DataFrame({
-            'Class': ['On-Time (0)', 'Delayed (1)'],
-            'Precision': [report['0']['precision'], report['1']['precision']],
-            'Recall': [report['0']['recall'], report['1']['recall']],
-            'F1-Score': [report['0']['f1-score'], report['1']['f1-score']],
-            'Support': [int(report['0']['support']), int(report['1']['support'])]
-        })
+        report = metrics.get('classification_report_default_thr', {})
+        if not isinstance(report, dict) or '0' not in report or '1' not in report:
+            st.warning("Classification report not available in metrics.")
+        else:
+            report_df = pd.DataFrame({
+                'Class': ['On-Time (0)', 'Delayed (1)'],
+                'Precision': [report.get('0', {}).get('precision', 0.0), report.get('1', {}).get('precision', 0.0)],
+                'Recall': [report.get('0', {}).get('recall', 0.0), report.get('1', {}).get('recall', 0.0)],
+                'F1-Score': [report.get('0', {}).get('f1-score', 0.0), report.get('1', {}).get('f1-score', 0.0)],
+                'Support': [int(report.get('0', {}).get('support', 0)), int(report.get('1', {}).get('support', 0))]
+            })
         
         st.dataframe(report_df.style.format({
             'Precision': '{:.1%}',
@@ -443,14 +516,20 @@ with tab2:
             """)
         
         with col2:
+            n_train = metrics.get('n_train', 0)
+            n_test = metrics.get('n_test', 0)
+            delay_rate_train = metrics.get('delay_rate_train', 0.0)
+            delay_rate_test = metrics.get('delay_rate_test', 0.0)
             st.markdown(f"""
             ### 📈 Dataset Info
             
-            - **Training Samples**: {metrics['n_train']:,}
-            - **Test Samples**: {metrics['n_test']:,}
-            - **Delay Rate (Train)**: {metrics['delay_rate_train']:.1%}
-            - **Delay Rate (Test)**: {metrics['delay_rate_test']:.1%}
-            - **Model Type**: Random Forest (500 trees)
+            - **Training Samples**: {n_train:,}
+            - **Test Samples**: {n_test:,}
+            - **Delay Rate (Train)**: {delay_rate_train:.1%}
+            - **Delay Rate (Test)**: {delay_rate_test:.1%}
+            - **Best Model**: {metrics.get('best_model_name', 'Unknown')}
+            - **Model Type**: {metrics.get('best_model_type', 'Unknown').upper()}
+            - **Val AUC**: {metrics.get('best_model_val_auc', 0.0):.3f}
             """)
 
 
@@ -460,69 +539,134 @@ with tab2:
 with tab3:
     st.header("🎯 Confusion Matrix Analysis")
     
-    if metrics is None:
+    if metrics is None or not isinstance(metrics, dict):
         st.warning("Metrics not available.")
+    elif 'confusion_matrix_default_thr' not in metrics:
+        st.warning("Confusion matrix not available in metrics.")
     else:
-        col_cm, col_exp = st.columns([1.2, 1])
-
-        with col_cm:
-            cm = metrics['confusion_matrix']
+        # Threshold selector
+        st.subheader("Select Threshold")
+        threshold_mode = st.radio(
+            "Choose threshold to display:",
+            ["Default (0.5)", "High-Recall (0.4)", "Custom"],
+            horizontal=True
+        )
+        
+        if threshold_mode == "Default (0.5)":
+            selected_thr = metrics.get('default_threshold', 0.5)
+            cm = metrics.get('confusion_matrix_default_thr')
+            report = metrics.get('classification_report_default_thr', {})
+        elif threshold_mode == "High-Recall (0.4)":
+            selected_thr = metrics.get('high_recall_threshold', 0.4)
+            # Calculate confusion matrix for high-recall threshold
+            threshold_metrics = metrics.get('threshold_metrics', [])
+            high_recall_metrics = None
+            for tm in threshold_metrics:
+                if abs(tm.get('threshold', 0) - selected_thr) < 0.01:
+                    high_recall_metrics = tm
+                    break
             
-            # Annotated heatmap
-            fig = go.Figure(data=go.Heatmap(
-                z=cm,
-                x=['Predicted On-Time', 'Predicted Delayed'],
-                y=['Actually On-Time', 'Actually Delayed'],
-                text=[[f'{cm[0,0]:,}<br>{cm[0,0]/cm.sum()*100:.1f}%',
-                       f'{cm[0,1]:,}<br>{cm[0,1]/cm.sum()*100:.1f}%'],
-                      [f'{cm[1,0]:,}<br>{cm[1,0]/cm.sum()*100:.1f}%',
-                       f'{cm[1,1]:,}<br>{cm[1,1]/cm.sum()*100:.1f}%']],
-                texttemplate='%{text}',
-                textfont={"size": 16},
-                colorscale='Blues',
-                showscale=False,
-            ))
-            
-            fig.update_layout(
-                title="Confusion Matrix (Test Set)",
-                xaxis_title="Predicted Label",
-                yaxis_title="Actual Label",
-                height=450,
-                font=dict(size=14)
+            if high_recall_metrics:
+                # We need to reconstruct CM from metrics - approximate
+                st.info(f"Showing metrics for threshold {selected_thr:.2f}")
+                cm = None  # Will show metrics instead
+            else:
+                cm = metrics.get('confusion_matrix_default_thr')
+                report = metrics.get('classification_report_default_thr', {})
+        else:  # Custom
+            selected_thr = st.slider(
+                "Custom threshold",
+                min_value=0.1,
+                max_value=0.9,
+                value=0.5,
+                step=0.05,
+                format="%.2f"
             )
+            # Find closest threshold in metrics
+            threshold_metrics = metrics.get('threshold_metrics', [])
+            closest_metrics = min(threshold_metrics, key=lambda x: abs(x.get('threshold', 0.5) - selected_thr))
+            cm = None
+            report = None
+        
+        # For custom/high-recall, show metrics table instead of CM
+        if cm is None:
+            if threshold_mode == "Custom":
+                metrics_to_show = closest_metrics
+            else:
+                metrics_to_show = high_recall_metrics
             
-            st.plotly_chart(fig, use_container_width=True)
+            if metrics_to_show:
+                st.info(f"Metrics for threshold {selected_thr:.2f}")
+                metrics_df = pd.DataFrame({
+                    'Metric': ['Accuracy', 'Precision (Delayed)', 'Recall (Delayed)', 'F1-Score (Delayed)'],
+                    'Value': [
+                        f"{metrics_to_show.get('accuracy', 0.0):.1%}",
+                        f"{metrics_to_show.get('precision_1', 0.0):.1%}",
+                        f"{metrics_to_show.get('recall_1', 0.0):.1%}",
+                        f"{metrics_to_show.get('f1_1', 0.0):.3f}"
+                    ]
+                })
+                st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning("Metrics not available for selected threshold.")
+        else:
+            col_cm, col_exp = st.columns([1.2, 1])
 
-        with col_exp:
-            st.markdown("### 📖 Understanding the Matrix")
-            
-            st.markdown(f"""
-            **Total Test Samples:** {cm.sum():,}
-            
-            **Breakdown:**
-            - ✅ **True Negatives ({cm[0,0]:,}):** Correctly predicted on-time
-            - ✅ **True Positives ({cm[1,1]:,}):** Correctly predicted delayed
-            - ❌ **False Positives ({cm[0,1]:,}):** Predicted delay, but on-time
-            - ❌ **False Negatives ({cm[1,0]:,}):** Predicted on-time, but delayed
-            
-            **Key Insight:**
-            The model is conservative about predicting delays. It catches {cm[1,1]/(cm[1,0]+cm[1,1])*100:.1f}% 
-            of actual delays (recall) but has more false negatives than false positives.
-            """)
-            
-            # Error types
-            st.markdown("### ⚠️ Error Analysis")
-            
-            false_positive_rate = cm[0,1] / (cm[0,0] + cm[0,1])
-            false_negative_rate = cm[1,0] / (cm[1,0] + cm[1,1])
-            
-            st.markdown(f"""
-            - **False Positive Rate**: {false_positive_rate:.1%}
-            - **False Negative Rate**: {false_negative_rate:.1%}
-            
-            The model makes more "false negative" errors (missing delays) than 
-            "false positive" errors (false alarms).
-            """)
+            with col_cm:
+                # Annotated heatmap
+                fig = go.Figure(data=go.Heatmap(
+                    z=cm,
+                    x=['Predicted On-Time', 'Predicted Delayed'],
+                    y=['Actually On-Time', 'Actually Delayed'],
+                    text=[[f'{cm[0,0]:,}<br>{cm[0,0]/cm.sum()*100:.1f}%',
+                           f'{cm[0,1]:,}<br>{cm[0,1]/cm.sum()*100:.1f}%'],
+                          [f'{cm[1,0]:,}<br>{cm[1,0]/cm.sum()*100:.1f}%',
+                           f'{cm[1,1]:,}<br>{cm[1,1]/cm.sum()*100:.1f}%']],
+                    texttemplate='%{text}',
+                    textfont={"size": 16},
+                    colorscale='Blues',
+                    showscale=False,
+                ))
+                
+                fig.update_layout(
+                    title=f"Confusion Matrix (Test Set, Threshold={selected_thr:.2f})",
+                    xaxis_title="Predicted Label",
+                    yaxis_title="Actual Label",
+                    height=450,
+                    font=dict(size=14)
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col_exp:
+                st.markdown("### 📖 Understanding the Matrix")
+                
+                st.markdown(f"""
+                **Total Test Samples:** {cm.sum():,}
+                
+                **Breakdown:**
+                - ✅ **True Negatives ({cm[0,0]:,}):** Correctly predicted on-time
+                - ✅ **True Positives ({cm[1,1]:,}):** Correctly predicted delayed
+                - ❌ **False Positives ({cm[0,1]:,}):** Predicted delay, but on-time
+                - ❌ **False Negatives ({cm[1,0]:,}):** Predicted on-time, but delayed
+                
+                **Key Insight:**
+                The model catches {cm[1,1]/(cm[1,0]+cm[1,1])*100:.1f}% 
+                of actual delays (recall) at this threshold.
+                """)
+                
+                # Error types
+                st.markdown("### ⚠️ Error Analysis")
+                
+                false_positive_rate = cm[0,1] / (cm[0,0] + cm[0,1]) if (cm[0,0] + cm[0,1]) > 0 else 0
+                false_negative_rate = cm[1,0] / (cm[1,0] + cm[1,1]) if (cm[1,0] + cm[1,1]) > 0 else 0
+                
+                st.markdown(f"""
+                - **False Positive Rate**: {false_positive_rate:.1%}
+                - **False Negative Rate**: {false_negative_rate:.1%}
+                
+                Lower thresholds catch more delays but increase false alarms.
+                """)
 
 
 # =============================
@@ -531,15 +675,17 @@ with tab3:
 with tab4:
     st.header("📈 ROC Curve Analysis")
     
-    if metrics is None:
+    if metrics is None or not isinstance(metrics, dict):
         st.warning("Metrics not available.")
+    elif 'fpr' not in metrics or 'tpr' not in metrics or 'roc_auc' not in metrics:
+        st.warning("ROC curve data not available in metrics.")
     else:
         col_roc, col_roc_exp = st.columns([1.4, 1])
 
         with col_roc:
-            fpr = metrics['fpr']
-            tpr = metrics['tpr']
-            roc_auc = metrics['roc_auc']
+            fpr = metrics.get('fpr')
+            tpr = metrics.get('tpr')
+            roc_auc = metrics.get('roc_auc', 0.0)
             
             fig = go.Figure()
             
@@ -623,11 +769,13 @@ with tab4:
 with tab5:
     st.header("⚖️ Class Imbalance Analysis")
     
-    if metrics is None:
+    if metrics is None or not isinstance(metrics, dict):
         st.warning("Metrics not available.")
+    elif 'confusion_matrix_default_thr' not in metrics or 'delay_rate_test' not in metrics:
+        st.warning("Required metrics not available.")
     else:
-        cm = metrics['confusion_matrix']
-        delay_rate = metrics['delay_rate_test']
+        cm = metrics.get('confusion_matrix_default_thr')
+        delay_rate = metrics.get('delay_rate_test', 0.0)
         
         st.markdown(f"""
         The dataset is **highly imbalanced**, with only **{delay_rate:.1%}** of flights delayed 
@@ -686,27 +834,29 @@ with tab5:
         # Detailed metrics by class
         st.subheader("📊 Per-Class Performance")
         
-        report = metrics['classification_report']
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### ✅ On-Time Flights (Majority Class)")
-            st.metric("Precision", f"{report['0']['precision']:.1%}")
-            st.metric("Recall", f"{report['0']['recall']:.1%}")
-            st.metric("F1-Score", f"{report['0']['f1-score']:.3f}")
-            st.metric("Support", f"{int(report['0']['support']):,}")
+        report = metrics.get('classification_report_default_thr', {})
+        if not isinstance(report, dict) or '0' not in report or '1' not in report:
+            st.warning("Classification report not available.")
+        else:
+            col1, col2 = st.columns(2)
             
-            st.markdown("""
-            The model performs well on the majority class with high precision and recall.
-            """)
-        
-        with col2:
-            st.markdown("### ⚠️ Delayed Flights (Minority Class)")
-            st.metric("Precision", f"{report['1']['precision']:.1%}")
-            st.metric("Recall", f"{report['1']['recall']:.1%}")
-            st.metric("F1-Score", f"{report['1']['f1-score']:.3f}")
-            st.metric("Support", f"{int(report['1']['support']):,}")
+            with col1:
+                st.markdown("### ✅ On-Time Flights (Majority Class)")
+                st.metric("Precision", f"{report.get('0', {}).get('precision', 0.0):.1%}")
+                st.metric("Recall", f"{report.get('0', {}).get('recall', 0.0):.1%}")
+                st.metric("F1-Score", f"{report.get('0', {}).get('f1-score', 0.0):.3f}")
+                st.metric("Support", f"{int(report.get('0', {}).get('support', 0)):,}")
+                
+                st.markdown("""
+                The model performs well on the majority class with high precision and recall.
+                """)
+            
+            with col2:
+                st.markdown("### ⚠️ Delayed Flights (Minority Class)")
+                st.metric("Precision", f"{report.get('1', {}).get('precision', 0.0):.1%}")
+                st.metric("Recall", f"{report.get('1', {}).get('recall', 0.0):.1%}")
+                st.metric("F1-Score", f"{report.get('1', {}).get('f1-score', 0.0):.3f}")
+                st.metric("Support", f"{int(report.get('1', {}).get('support', 0)):,}")
             
             st.markdown("""
             Lower recall indicates the model misses many delays due to class imbalance.
@@ -744,25 +894,289 @@ with tab5:
                - Combination of multiple models
             """)
 
+# =============================
+# TAB 6: Threshold Analysis
+# =============================
+with tab6:
+    st.header("🎚️ Threshold Analysis & Trade-offs")
+    
+    if metrics is None or not isinstance(metrics, dict):
+        st.warning("Metrics not available. Please re-train the model.")
+    elif 'threshold_metrics' not in metrics:
+        st.warning("Threshold metrics not available. Please re-train the model.")
+    else:
+        threshold_metrics = metrics.get('threshold_metrics', [])
+        default_thr = metrics.get('default_threshold', 0.5)
+        high_recall_thr = metrics.get('high_recall_threshold', 0.4)
+        
+        st.markdown("""
+        ### Understanding Classification Thresholds
+        
+        The classification threshold determines when we predict a flight as "delayed". 
+        Lower thresholds catch more delays (higher recall) but create more false alarms (lower precision).
+        Higher thresholds reduce false alarms but miss more actual delays.
+        """)
+        
+        # Threshold comparison
+        st.subheader("📈 Threshold Comparison")
+        
+        col_default, col_high = st.columns(2)
+        
+        with col_default:
+            st.markdown(f"### Default ({default_thr:.2f})")
+            default_metrics = min(threshold_metrics, key=lambda x: abs(x.get('threshold', 0.5) - default_thr))
+            st.markdown(f"""
+            - **Accuracy**: {default_metrics.get('accuracy', 0.0):.1%}
+            - **Precision**: {default_metrics.get('precision_1', 0.0):.1%}
+            - **Recall**: {default_metrics.get('recall_1', 0.0):.1%}
+            - **F1**: {default_metrics.get('f1_1', 0.0):.3f}
+            
+            **Use when:** Balanced approach, general use case
+            """)
+        
+        with col_high:
+            st.markdown(f"### High-Recall ({high_recall_thr:.2f})")
+            high_recall_metrics = min(threshold_metrics, key=lambda x: abs(x.get('threshold', 0.5) - high_recall_thr))
+            st.markdown(f"""
+            - **Accuracy**: {high_recall_metrics.get('accuracy', 0.0):.1%}
+            - **Precision**: {high_recall_metrics.get('precision_1', 0.0):.1%}
+            - **Recall**: {high_recall_metrics.get('recall_1', 0.0):.1%}
+            - **F1**: {high_recall_metrics.get('f1_1', 0.0):.3f}
+            
+            **Use when:** Catching delays is critical, false alarms acceptable
+            """)
+        
+        st.markdown("---")
+        
+        # Precision-Recall Curve
+        st.subheader("📊 Precision-Recall Trade-off")
+        
+        # Prepare data for plotting
+        thresholds = [tm.get('threshold', 0.5) for tm in threshold_metrics]
+        precisions = [tm.get('precision_1', 0.0) for tm in threshold_metrics]
+        recalls = [tm.get('recall_1', 0.0) for tm in threshold_metrics]
+        accuracies = [tm.get('accuracy', 0.0) for tm in threshold_metrics]
+        f1_scores = [tm.get('f1_1', 0.0) for tm in threshold_metrics]
+        
+        # Precision-Recall curve
+        fig_pr = go.Figure()
+        
+        fig_pr.add_trace(go.Scatter(
+            x=recalls,
+            y=precisions,
+            mode='lines+markers',
+            name='Precision-Recall Curve',
+            line=dict(color='blue', width=3),
+            marker=dict(size=8),
+            hovertemplate='<b>Threshold: %{customdata:.2f}</b><br>' +
+                         'Precision: %{y:.1%}<br>' +
+                         'Recall: %{x:.1%}<extra></extra>',
+            customdata=thresholds
+        ))
+        
+        # Mark default and high-recall thresholds
+        default_idx = min(range(len(thresholds)), key=lambda i: abs(thresholds[i] - default_thr))
+        high_recall_idx = min(range(len(thresholds)), key=lambda i: abs(thresholds[i] - high_recall_thr))
+        
+        fig_pr.add_trace(go.Scatter(
+            x=[recalls[default_idx]],
+            y=[precisions[default_idx]],
+            mode='markers',
+            name=f'Default ({default_thr:.2f})',
+            marker=dict(size=15, color='green', symbol='star'),
+            hovertemplate=f'Default Threshold<br>Precision: {precisions[default_idx]:.1%}<br>Recall: {recalls[default_idx]:.1%}<extra></extra>'
+        ))
+        
+        fig_pr.add_trace(go.Scatter(
+            x=[recalls[high_recall_idx]],
+            y=[precisions[high_recall_idx]],
+            mode='markers',
+            name=f'High-Recall ({high_recall_thr:.2f})',
+            marker=dict(size=15, color='orange', symbol='star'),
+            hovertemplate=f'High-Recall Threshold<br>Precision: {precisions[high_recall_idx]:.1%}<br>Recall: {recalls[high_recall_idx]:.1%}<extra></extra>'
+        ))
+        
+        fig_pr.update_layout(
+            title="Precision-Recall Curve (Delayed Class)",
+            xaxis_title="Recall (Sensitivity)",
+            yaxis_title="Precision",
+            height=500,
+            hovermode='closest',
+            legend=dict(x=0.02, y=0.98)
+        )
+        
+        st.plotly_chart(fig_pr, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Metrics over threshold
+        st.subheader("📉 Metrics vs Threshold")
+        
+        metric_choice = st.radio(
+            "Select metric to visualize:",
+            ["Accuracy", "Precision", "Recall", "F1-Score"],
+            horizontal=True
+        )
+        
+        if metric_choice == "Accuracy":
+            y_data = accuracies
+            y_label = "Accuracy"
+        elif metric_choice == "Precision":
+            y_data = precisions
+            y_label = "Precision (Delayed)"
+        elif metric_choice == "Recall":
+            y_data = recalls
+            y_label = "Recall (Delayed)"
+        else:  # F1-Score
+            y_data = f1_scores
+            y_label = "F1-Score (Delayed)"
+        
+        fig_metrics = go.Figure()
+        
+        fig_metrics.add_trace(go.Scatter(
+            x=thresholds,
+            y=y_data,
+            mode='lines+markers',
+            name=y_label,
+            line=dict(color='purple', width=3),
+            marker=dict(size=8),
+            hovertemplate=f'<b>Threshold: %{{x:.2f}}</b><br>{y_label}: %{{y:.3f}}<extra></extra>'
+        ))
+        
+        # Mark default and high-recall
+        fig_metrics.add_vline(
+            x=default_thr,
+            line_dash="dash",
+            line_color="green",
+            annotation_text=f"Default ({default_thr:.2f})",
+            annotation_position="top"
+        )
+        
+        fig_metrics.add_vline(
+            x=high_recall_thr,
+            line_dash="dash",
+            line_color="orange",
+            annotation_text=f"High-Recall ({high_recall_thr:.2f})",
+            annotation_position="top"
+        )
+        
+        fig_metrics.update_layout(
+            title=f"{y_label} vs Classification Threshold",
+            xaxis_title="Classification Threshold",
+            yaxis_title=y_label,
+            height=450,
+            hovermode='x unified'
+        )
+        
+        st.plotly_chart(fig_metrics, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # When to use which threshold
+        st.subheader("💡 When to Use Which Threshold?")
+        
+        col_when1, col_when2 = st.columns(2)
+        
+        with col_when1:
+            st.markdown("""
+            ### 🎯 Default Threshold (0.5)
+            
+            **Best for:**
+            - General-purpose predictions
+            - Balanced precision/recall needs
+            - When false alarms and missed delays are equally costly
+            
+            **Characteristics:**
+            - Moderate recall (~65%)
+            - Moderate precision (~28%)
+            - Good overall accuracy
+            """)
+        
+        with col_when2:
+            st.markdown("""
+            ### 🚨 High-Recall Threshold (0.4)
+            
+            **Best for:**
+            - Critical applications where missing delays is costly
+            - Passenger notification systems
+            - When false alarms are acceptable
+            
+            **Characteristics:**
+            - High recall (~81%)
+            - Lower precision (~24%)
+            - Catches more delays but more false alarms
+            """)
+        
+        # Full metrics table
+        with st.expander("📋 Complete Threshold Metrics Table"):
+            metrics_df = pd.DataFrame(threshold_metrics)
+            metrics_df = metrics_df[[
+                'threshold', 'accuracy', 'precision_1', 'recall_1', 'f1_1'
+            ]]
+            metrics_df.columns = ['Threshold', 'Accuracy', 'Precision (Delayed)', 'Recall (Delayed)', 'F1-Score (Delayed)']
+            metrics_df = metrics_df.sort_values('Threshold')
+            
+            st.dataframe(
+                metrics_df.style.format({
+                    'Threshold': '{:.2f}',
+                    'Accuracy': '{:.1%}',
+                    'Precision (Delayed)': '{:.1%}',
+                    'Recall (Delayed)': '{:.1%}',
+                    'F1-Score (Delayed)': '{:.3f}'
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
 st.markdown("---")
 
 # Model info footer
 with st.expander("ℹ️ About the Model"):
-    st.markdown("""
-    **Model Type:** Random Forest Classifier (500 trees, max_depth=20)
+    if metrics is not None and isinstance(metrics, dict):
+        best_model_name = metrics.get('best_model_name', 'Unknown')
+        best_model_type = metrics.get('best_model_type', 'Unknown').upper()
+        val_auc = metrics.get('best_model_val_auc', 0.0)
+        roc_auc = metrics.get('roc_auc', 0.0)
+        accuracy = metrics.get('accuracy_default_thr', 0.0)
+        default_thr = metrics.get('default_threshold', 0.5)
+        high_recall_thr = metrics.get('high_recall_threshold', 0.4)
+    else:
+        best_model_name = "Unknown"
+        best_model_type = "Unknown"
+        val_auc = 0.0
+        roc_auc = 0.0
+        accuracy = 0.0
+        default_thr = 0.5
+        high_recall_thr = 0.4
+    
+    st.markdown(f"""
+    **Model Selection:**
+    - **Best Model:** {best_model_name} ({best_model_type})
+    - **Validation ROC-AUC:** {val_auc:.3f}
+    - Selected from multiple candidates (XGBoost variants + RandomForest)
+    - Trained on balanced dataset (50% delayed, 50% on-time)
+    - Evaluated on real-world distribution (~17% delayed)
     
     **Features Used (Pre-Departure Only):**
-    - **Categorical**: Airline, Origin, Destination, Time blocks, Day names
-    - **Numerical**: Day of week/month, Hour, Distance, Scheduled departure time
+    - **Categorical**: Airline, Origin, Destination, DepTimeBlk, DepTimeOfDay, DayOfWeekName, MonthName
+    - **Numerical**: DayOfWeek, DayofMonth, DepHour, Month, Quarter, Year, Distance, DistanceGroup, CRSDepTime
     
     **Performance Summary:**
-    - Overall Accuracy: ~79%
-    - ROC-AUC: ~0.68
-    - Balanced for class imbalance
+    - **Test Accuracy (threshold={default_thr:.2f}):** {accuracy:.1%}
+    - **Test ROC-AUC:** {roc_auc:.3f}
+    - **Default Threshold:** {default_thr:.2f} (balanced precision/recall)
+    - **High-Recall Threshold:** {high_recall_thr:.2f} (catches ~81% of delays)
+    
+    **Training Strategy:**
+    - Balanced training set via oversampling delayed flights
+    - Internal train/validation split for model selection
+    - Threshold sweep to analyze precision/recall trade-offs
+    - Uses class weighting to handle imbalance
     
     **Important Notes:**
-    - Uses ONLY pre-departure information
+    - Uses ONLY pre-departure information (no data leakage)
     - Does NOT use actual departure delay, taxi time, or flight time
-    - Realistic for real-world prediction scenarios
-    - Cannot predict unexpected events (weather, mechanicals)
+    - Realistic for real-world prediction scenarios (booking/scheduling time)
+    - Cannot predict unexpected events (weather, mechanical issues)
+    - Model explainability via SHAP values and surrogate decision tree
     """)

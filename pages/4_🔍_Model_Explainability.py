@@ -6,11 +6,13 @@ import os
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import joblib
 import plotly.graph_objects as go
 import plotly.express as px
 from sklearn.tree import plot_tree
 import matplotlib.pyplot as plt
+from utils import load_flight_data, prepare_flight_features
 
 st.title("🔍 Model Explainability")
 st.markdown(
@@ -123,7 +125,9 @@ with tab1:
             for idx, row in feat_imp_df.head(10).iterrows():
                 pct = row['Importance'] * 100 / feat_imp_df['Importance'].sum()
                 st.markdown(f"**{idx+1}. {row['Feature']}**")
-                st.progress(row['Importance'] / feat_imp_df['Importance'].max())
+                # Convert to Python float to avoid float32 type error
+                progress_value = float(row['Importance'] / feat_imp_df['Importance'].max())
+                st.progress(progress_value)
                 st.caption(f"Score: {row['Importance']:.4f} ({pct:.1f}%)")
             
             st.markdown("---")
@@ -421,11 +425,12 @@ with tab2:
         
         st.dataframe(feature_df.head(15), use_container_width=True)
         
-        # Force plot (alternative visualization)
-        with st.expander("🔍 See Force Plot"):
+        # Force plot (custom Plotly visualization)
+        with st.expander("🔍 See Force Plot Visualization"):
             st.markdown("""
-            Force plot shows the same information in a different format - features pushing 
-            right (red) increase delay risk, features pushing left (blue) decrease it.
+            This visualization shows how each feature pushes the prediction toward or away from delay.
+            Features pushing right (red) increase delay risk, features pushing left (blue) decrease it.
+            The final prediction is the sum of the base value and all feature contributions.
             """)
             
             try:
@@ -434,19 +439,116 @@ with tab2:
                 force_X = X_values[:min_len]
                 force_features = feature_names[:min_len]
                 
-                fig, ax = plt.subplots(figsize=(14, 3))
-                shap.force_plot(
-                    shap_data['expected_value'],
-                    force_shap,
-                    force_X,
-                    feature_names=force_features,
-                    show=False,
-                    matplotlib=True
+                # Calculate cumulative sum for force plot effect
+                base_value = shap_data['expected_value']
+                sorted_indices = np.argsort(np.abs(force_shap))[::-1]  # Sort by absolute impact
+                
+                # Build cumulative contributions
+                cumulative = base_value
+                contributions = []
+                feature_list = []
+                colors = []
+                
+                for idx in sorted_indices[:15]:  # Top 15 features
+                    shap_val = force_shap[idx]
+                    cumulative += shap_val
+                    contributions.append(cumulative)
+                    feature_list.append(f"{force_features[idx]} = {force_X[idx]:.2f}")
+                    # Red for positive (increases delay), blue for negative (decreases delay)
+                    colors.append('red' if shap_val > 0 else 'blue')
+                
+                # Create custom force plot with Plotly
+                fig = go.Figure()
+                
+                # Add base value line
+                fig.add_hline(
+                    y=base_value,
+                    line_dash="dash",
+                    line_color="gray",
+                    annotation_text=f"Base Value: {base_value:.3f}",
+                    annotation_position="right"
                 )
-                st.pyplot(fig)
-                plt.close()
+                
+                # Add feature contributions as bars
+                for i, (contrib, feat_name, color) in enumerate(zip(contributions, feature_list, colors)):
+                    prev_contrib = base_value if i == 0 else contributions[i-1]
+                    fig.add_trace(go.Bar(
+                        x=[i],
+                        y=[contrib - prev_contrib],
+                        base=prev_contrib,
+                        name=feat_name,
+                        marker_color=color,
+                        text=[f"{feat_name}<br>Impact: {contrib - prev_contrib:+.3f}"],
+                        textposition='auto',
+                        hovertemplate=f"{feat_name}<br>Contribution: %{{y:+.3f}}<br>Cumulative: {contrib:.3f}<extra></extra>"
+                    ))
+                
+                # Add final prediction line
+                final_pred = contributions[-1] if contributions else base_value
+                fig.add_hline(
+                    y=final_pred,
+                    line_dash="dot",
+                    line_color="green",
+                    line_width=3,
+                    annotation_text=f"Final Prediction: {final_pred:.3f}",
+                    annotation_position="left"
+                )
+                
+                fig.update_layout(
+                    title="Force Plot: Feature Contributions to Prediction",
+                    xaxis_title="Features (sorted by impact)",
+                    yaxis_title="Cumulative Prediction Value",
+                    height=500,
+                    showlegend=False,
+                    xaxis=dict(
+                        tickmode='array',
+                        tickvals=list(range(len(feature_list))),
+                        ticktext=[f.split('=')[0].strip() for f in feature_list],
+                        tickangle=-45
+                    )
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Alternative: horizontal bar chart showing contributions
+                st.markdown("**Feature Contributions (Horizontal View):**")
+                contrib_df = pd.DataFrame({
+                    'Feature': [f.split('=')[0].strip() for f in feature_list],
+                    'Contribution': [contributions[i] - (base_value if i == 0 else contributions[i-1]) 
+                                    for i in range(len(contributions))],
+                    'Cumulative': contributions
+                })
+                
+                fig2 = go.Figure()
+                fig2.add_trace(go.Bar(
+                    x=contrib_df['Contribution'],
+                    y=contrib_df['Feature'],
+                    orientation='h',
+                    marker_color=['red' if c > 0 else 'blue' for c in contrib_df['Contribution']],
+                    text=[f"{c:+.3f}" for c in contrib_df['Contribution']],
+                    textposition='auto',
+                    hovertemplate='%{y}<br>Contribution: %{x:+.3f}<extra></extra>'
+                ))
+                
+                fig2.add_vline(
+                    x=0,
+                    line_dash="dash",
+                    line_color="gray"
+                )
+                
+                fig2.update_layout(
+                    title="Feature Contributions to Prediction",
+                    xaxis_title="SHAP Value (Contribution)",
+                    yaxis_title="Feature",
+                    height=400,
+                    showlegend=False
+                )
+                
+                st.plotly_chart(fig2, use_container_width=True)
+                
             except Exception as e:
-                st.warning(f"Could not display force plot: {e}")
+                st.warning(f"Could not create force plot visualization: {e}")
+                st.info("Try using the waterfall plot above for a similar visualization.")
     
     else:
         st.warning("""
@@ -471,6 +573,18 @@ with tab3:
     """)
     
     if shap_available and shap_data is not None:
+        # Load original data to get feature ranges
+        @st.cache_data
+        def get_original_feature_ranges():
+            """Get original (unscaled) feature ranges from training data"""
+            df_raw = load_flight_data()
+            df = prepare_flight_features(df_raw)
+            df = df[(df["Cancelled"] == False) & (df["Diverted"] == False)]
+            return df
+        
+        # Get original data for feature ranges
+        df_original = get_original_feature_ranges()
+        
         # Start with a base sample
         col1, col2 = st.columns([2, 1])
         
@@ -499,44 +613,137 @@ with tab3:
             
             top_features = feat_imp_df.head(10)['Feature'].tolist()
             
-            # Create sliders/inputs for top features
-            adjusted_values = {}
+            # Helper function to convert original value to encoded
+            def convert_to_encoded(feat_name, original_val):
+                """Convert original feature value to encoded/scaled value"""
+                if feat_name in preprocessors['categorical_cols']:
+                    # Categorical: use label encoder
+                    le = preprocessors['label_encoders'][feat_name]
+                    # Find closest category
+                    if isinstance(original_val, str):
+                        if original_val in le.classes_:
+                            return le.transform([original_val])[0]
+                        else:
+                            # Return most common
+                            return 0
+                    else:
+                        return original_val  # Already encoded
+                else:
+                    # Numerical: impute then scale
+                    imputer = preprocessors['imputer_num']
+                    scaler = preprocessors['scaler']
+                    num_cols = preprocessors['numerical_cols']
+                    
+                    if feat_name not in num_cols:
+                        return original_val
+                    
+                    feat_idx_in_num = num_cols.index(feat_name)
+                    
+                    # Get median for imputation
+                    median_val = imputer.statistics_[feat_idx_in_num]
+                    imputed_val = original_val if not np.isnan(original_val) else median_val
+                    
+                    # Scale
+                    mean_val = scaler.mean_[feat_idx_in_num]
+                    scale_val = scaler.scale_[feat_idx_in_num]
+                    scaled_val = (imputed_val - mean_val) / scale_val
+                    
+                    return scaled_val
             
-            st.markdown("**Adjust Top Features:**")
+            # Helper function to convert encoded value to original
+            def convert_to_original(feat_name, encoded_val):
+                """Convert encoded/scaled value back to original scale"""
+                if feat_name in preprocessors['categorical_cols']:
+                    # Categorical: use label encoder
+                    le = preprocessors['label_encoders'][feat_name]
+                    if int(encoded_val) < len(le.classes_):
+                        return le.inverse_transform([int(encoded_val)])[0]
+                    else:
+                        return le.classes_[0]
+                else:
+                    # Numerical: unscale then un-impute
+                    scaler = preprocessors['scaler']
+                    num_cols = preprocessors['numerical_cols']
+                    
+                    if feat_name not in num_cols:
+                        return encoded_val
+                    
+                    feat_idx_in_num = num_cols.index(feat_name)
+                    mean_val = scaler.mean_[feat_idx_in_num]
+                    scale_val = scaler.scale_[feat_idx_in_num]
+                    
+                    # Unscale
+                    original_val = encoded_val * scale_val + mean_val
+                    return original_val
+            
+            # Create sliders/inputs for top features (using original values)
+            adjusted_values_original = {}
+            adjusted_values_encoded = {}
+            
+            st.markdown("**Adjust Top Features (Original Scale):**")
             
             for feat in top_features[:6]:  # Show top 6 adjustable features
                 feat_idx = feature_names.index(feat)
-                original_value = X_base[0, feat_idx]
+                encoded_value = X_base[0, feat_idx]
+                original_value = convert_to_original(feat, encoded_value)
                 
                 # Determine if categorical or numerical
                 if feat in preprocessors['categorical_cols']:
-                    # For encoded categoricals, show as is
-                    new_value = st.number_input(
-                        f"{feat} (encoded)",
-                        value=float(original_value),
-                        step=1.0,
-                        help="This is an encoded categorical feature"
-                    )
-                else:
-                    # Numerical feature
-                    # Get min/max from data
-                    feat_min = float(shap_data['X_test_sample'][:, feat_idx].min())
-                    feat_max = float(shap_data['X_test_sample'][:, feat_idx].max())
+                    # Categorical: show dropdown with original categories
+                    le = preprocessors['label_encoders'][feat]
+                    categories = le.classes_.tolist()
                     
-                    new_value = st.slider(
+                    current_cat = original_value if isinstance(original_value, str) else categories[0]
+                    if current_cat not in categories:
+                        current_cat = categories[0]
+                    
+                    new_cat = st.selectbox(
                         feat,
-                        min_value=feat_min,
-                        max_value=feat_max,
-                        value=float(original_value),
-                        help=f"Original: {original_value:.2f}"
+                        options=categories,
+                        index=categories.index(current_cat),
+                        help=f"Current: {current_cat}"
                     )
-                
-                adjusted_values[feat_idx] = new_value
+                    adjusted_values_original[feat_idx] = new_cat
+                    adjusted_values_encoded[feat_idx] = convert_to_encoded(feat, new_cat)
+                else:
+                    # Numerical feature: get original range
+                    if feat in df_original.columns:
+                        feat_min_orig = float(df_original[feat].min())
+                        feat_max_orig = float(df_original[feat].max())
+                        feat_median_orig = float(df_original[feat].median())
+                    else:
+                        # Fallback: use encoded range converted back
+                        feat_min_enc = float(shap_data['X_test_sample'][:, feat_idx].min())
+                        feat_max_enc = float(shap_data['X_test_sample'][:, feat_idx].max())
+                        feat_min_orig = convert_to_original(feat, feat_min_enc)
+                        feat_max_orig = convert_to_original(feat, feat_max_enc)
+                        feat_median_orig = (feat_min_orig + feat_max_orig) / 2
+                    
+                    # Determine step size based on feature type
+                    if feat in ['Year']:
+                        step = 1.0
+                    elif feat in ['Month', 'DayofMonth', 'DayOfWeek', 'DepHour']:
+                        step = 1.0
+                    elif feat in ['Distance']:
+                        step = 50.0
+                    else:
+                        step = (feat_max_orig - feat_min_orig) / 100
+                    
+                    new_value_orig = st.slider(
+                        feat,
+                        min_value=feat_min_orig,
+                        max_value=feat_max_orig,
+                        value=float(original_value),
+                        step=step,
+                        help=f"Original value: {original_value:.2f}"
+                    )
+                    adjusted_values_original[feat_idx] = new_value_orig
+                    adjusted_values_encoded[feat_idx] = convert_to_encoded(feat, new_value_orig)
             
-            # Apply adjustments
+            # Apply adjustments (use encoded values for model)
             X_adjusted = X_base.copy()
-            for feat_idx, new_val in adjusted_values.items():
-                X_adjusted[0, feat_idx] = new_val
+            for feat_idx, new_val_encoded in adjusted_values_encoded.items():
+                X_adjusted[0, feat_idx] = new_val_encoded
         
         with col2:
             st.subheader("📊 Prediction Results")
@@ -591,16 +798,26 @@ with tab3:
         st.subheader("📝 Changes Made")
         
         changes = []
-        for feat_idx, new_val in adjusted_values.items():
+        for feat_idx, new_val_orig in adjusted_values_original.items():
             feat_name = feature_names[feat_idx]
-            old_val = X_base[0, feat_idx]
-            if new_val != old_val:
-                changes.append({
-                    'Feature': feat_name,
-                    'Original Value': f"{old_val:.2f}",
-                    'New Value': f"{new_val:.2f}",
-                    'Change': f"{new_val - old_val:+.2f}"
-                })
+            old_val_encoded = X_base[0, feat_idx]
+            old_val_orig = convert_to_original(feat_name, old_val_encoded)
+            
+            if new_val_orig != old_val_orig:
+                if isinstance(new_val_orig, str):
+                    changes.append({
+                        'Feature': feat_name,
+                        'Original Value': str(old_val_orig),
+                        'New Value': str(new_val_orig),
+                        'Change': f"{'Changed' if new_val_orig != old_val_orig else 'Unchanged'}"
+                    })
+                else:
+                    changes.append({
+                        'Feature': feat_name,
+                        'Original Value': f"{old_val_orig:.2f}",
+                        'New Value': f"{new_val_orig:.2f}",
+                        'Change': f"{new_val_orig - old_val_orig:+.2f}"
+                    })
         
         if changes:
             st.dataframe(pd.DataFrame(changes), use_container_width=True)
@@ -631,8 +848,12 @@ with tab3:
 with tab4:
     st.header("🌳 Decision Tree Surrogate Model")
     st.markdown("""
-    A shallow decision tree trained to approximate the Random Forest's behavior. 
-    This shows the key decision rules the model learned.
+    A shallow decision tree (max_depth=3) trained to approximate the main model's behavior. 
+    While the actual model uses XGBoost (an ensemble of many trees), this surrogate tree 
+    provides a simplified, interpretable view of the key decision rules.
+    
+    **Note:** This is a simplified approximation - the full XGBoost model is more complex 
+    and accurate, but harder to visualize. Use SHAP values for precise feature importance.
     """)
     
     if surrogate_tree is not None:
@@ -752,37 +973,116 @@ with tab5:
             # Convert to numpy if needed
             if isinstance(shap_vals, pd.DataFrame):
                 shap_vals = shap_vals.values
+            elif not isinstance(shap_vals, np.ndarray):
+                shap_vals = np.array(shap_vals)
+            
             if isinstance(X_sample, pd.DataFrame):
                 X_sample = X_sample.values
+            elif not isinstance(X_sample, np.ndarray):
+                X_sample = np.array(X_sample)
             
-            fig, ax = plt.subplots(figsize=(10, 6))
+            # Ensure correct dimensions
+            # shap_vals should be (n_samples, n_features)
+            # X_sample should be (n_samples, n_features)
+            if shap_vals.ndim == 1:
+                # If 1D, assume it's for one sample, reshape to (1, n_features)
+                shap_vals = shap_vals.reshape(1, -1)
+            elif shap_vals.ndim > 2:
+                # If more than 2D, flatten extra dimensions
+                shap_vals = shap_vals.reshape(shap_vals.shape[0], -1)
+            
+            if X_sample.ndim == 1:
+                X_sample = X_sample.reshape(1, -1)
+            elif X_sample.ndim > 2:
+                X_sample = X_sample.reshape(X_sample.shape[0], -1)
+            
+            # Ensure same number of samples
+            n_samples = min(shap_vals.shape[0], X_sample.shape[0])
+            shap_vals = shap_vals[:n_samples]
+            X_sample = X_sample[:n_samples]
             
             main_idx = feature_names.index(main_feature)
             
-            if interaction_feature == 'auto':
-                shap.dependence_plot(
-                    main_idx,
-                    shap_vals,
-                    X_sample,
-                    feature_names=feature_names,
-                    show=False
-                )
-            else:
-                interaction_idx = feature_names.index(interaction_feature)
-                shap.dependence_plot(
-                    main_idx,
-                    shap_vals,
-                    X_sample,
-                    feature_names=feature_names,
-                    interaction_index=interaction_idx,
-                    show=False
-                )
+            # Ensure main_idx is within bounds
+            if main_idx >= shap_vals.shape[1] or main_idx >= X_sample.shape[1]:
+                raise ValueError(f"Feature index {main_idx} out of bounds. SHAP shape: {shap_vals.shape}, X shape: {X_sample.shape}")
             
-            st.pyplot(fig)
-            plt.close()
+            # Create Plotly scatter plot (more reliable than SHAP plots in Streamlit)
+            fig = go.Figure()
+            
+            if interaction_feature != 'auto':
+                interaction_idx = feature_names.index(interaction_feature)
+                
+                if interaction_idx >= X_sample.shape[1]:
+                    raise ValueError(f"Interaction feature index {interaction_idx} out of bounds")
+                
+                # Create scatter plot with color coding
+                fig.add_trace(go.Scatter(
+                    x=X_sample[:, main_idx],
+                    y=shap_vals[:, main_idx],
+                    mode='markers',
+                    marker=dict(
+                        color=X_sample[:, interaction_idx],
+                        colorscale='Viridis',
+                        showscale=True,
+                        colorbar=dict(title=interaction_feature),
+                        size=6,
+                        opacity=0.7
+                    ),
+                    hovertemplate=f'{main_feature}: %{{x:.2f}}<br>SHAP Value: %{{y:.3f}}<br>{interaction_feature}: %{{marker.color:.2f}}<extra></extra>',
+                    name='Samples'
+                ))
+                
+                # Add trend line
+                z = np.polyfit(X_sample[:, main_idx], shap_vals[:, main_idx], 1)
+                p = np.poly1d(z)
+                x_trend = np.linspace(X_sample[:, main_idx].min(), X_sample[:, main_idx].max(), 100)
+                fig.add_trace(go.Scatter(
+                    x=x_trend,
+                    y=p(x_trend),
+                    mode='lines',
+                    name='Trend',
+                    line=dict(color='red', dash='dash', width=2)
+                ))
+            else:
+                # No interaction feature
+                fig.add_trace(go.Scatter(
+                    x=X_sample[:, main_idx],
+                    y=shap_vals[:, main_idx],
+                    mode='markers',
+                    marker=dict(size=6, opacity=0.7, color='blue'),
+                    hovertemplate=f'{main_feature}: %{{x:.2f}}<br>SHAP Value: %{{y:.3f}}<extra></extra>',
+                    name='Samples'
+                ))
+                
+                # Add trend line
+                z = np.polyfit(X_sample[:, main_idx], shap_vals[:, main_idx], 1)
+                p = np.poly1d(z)
+                x_trend = np.linspace(X_sample[:, main_idx].min(), X_sample[:, main_idx].max(), 100)
+                fig.add_trace(go.Scatter(
+                    x=x_trend,
+                    y=p(x_trend),
+                    mode='lines',
+                    name='Trend',
+                    line=dict(color='red', dash='dash', width=2)
+                ))
+            
+            fig.update_layout(
+                title=f"SHAP Dependence Plot: {main_feature}" + (f" (colored by {interaction_feature})" if interaction_feature != 'auto' else ""),
+                xaxis_title=main_feature,
+                yaxis_title="SHAP Value (Impact on Prediction)",
+                height=500,
+                hovermode='closest'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
         except Exception as e:
             st.error(f"Error creating dependence plot: {e}")
-            st.info("Please ensure SHAP data is properly computed.")
+            import traceback
+            with st.expander("Error Details"):
+                st.code(traceback.format_exc())
+            st.info("Please ensure SHAP data is properly computed and has correct dimensions.")
         
         st.markdown("""
         **How to read this:**
