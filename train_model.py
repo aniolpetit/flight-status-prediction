@@ -8,11 +8,9 @@ using post-departure features (DepDelay, TaxiOut, AirTime) that are highly predi
 import os
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder, StandardScaler, LabelEncoder
+from pathlib import Path
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     classification_report,
@@ -22,15 +20,23 @@ from sklearn.metrics import (
 )
 import joblib
 
-from utils import get_model_dataset
+# Pre-generated datasets from generate_datasets.py
+DATA_DIR = Path("data")
+TRAIN_PATH = DATA_DIR / "train_balanced.csv"
+TEST_PATH = DATA_DIR / "test_real.csv"
 
 
 def main():
     # -----------------------------
     # 1. Load and prepare dataset
     # -----------------------------
-    print("Loading and preparing data...")
-    df = get_model_dataset()
+    print("Loading pre-generated train/test datasets...")
+    if not TRAIN_PATH.exists() or not TEST_PATH.exists():
+        raise FileNotFoundError(
+            "Train/test files not found. Run `python generate_datasets.py` first."
+        )
+    df_train_full = pd.read_csv(TRAIN_PATH)
+    df_test_full = pd.read_csv(TEST_PATH)
 
     target_col = "IsArrDelayed"
 
@@ -54,22 +60,17 @@ def main():
     ]
 
     # Filter to only columns that exist in the dataframe
-    feature_cols = [c for c in feature_cols_candidates if c in df.columns]
+    feature_cols = [c for c in feature_cols_candidates if c in df_train_full.columns]
     
     print(f"\nSelected {len(feature_cols)} features:")
     for i, col in enumerate(feature_cols, 1):
         print(f"  {i}. {col}")
 
-    X = df[feature_cols].copy()
-    y = df[target_col].astype(int)
-
-    # Train/test split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y
-    )
+    # Split train/test from prepared files (already stratified by generate_datasets)
+    X_train = df_train_full[feature_cols].copy()
+    y_train = df_train_full[target_col].astype(int)
+    X_test = df_test_full[feature_cols].copy()
+    y_test = df_test_full[target_col].astype(int)
 
     print(f"Train size: {X_train.shape[0]:,} rows")
     print(f"Test size:  {X_test.shape[0]:,} rows")
@@ -245,8 +246,8 @@ def main():
         explainer = shap.TreeExplainer(model)
         
         # Sample test data for SHAP calculation (to save memory and time)
-        # Use up to 200 samples for detailed explanations
-        n_shap_samples = min(200, len(X_test))
+        # Use up to 100 samples for detailed explanations
+        n_shap_samples = min(100, len(X_test))
         X_test_sample = X_test[:n_shap_samples]
         y_test_sample = y_test[:n_shap_samples]
         
