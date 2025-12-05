@@ -1,14 +1,32 @@
 """
 Train ML model to predict arrival delays (> 15 minutes).
 
-This script replicates the high-performance approach from the reference notebook,
-using post-departure features (DepDelay, TaxiOut, AirTime) that are highly predictive.
+This script uses pre-generated balanced train/test datasets
+(from generate_datasets.py) and tries multiple models / hyperparameters:
+
+- XGBoost with GPU (if available)
+- XGBoost on CPU
+- RandomForest with different settings
+
+It:
+- Uses ONLY pre-departure features (no DepDelay, TaxiOut, AirTime, etc.)
+- Handles preprocessing (imputation, scaling, encoding)
+- Does an internal train/validation split on the balanced training set
+- Selects the best model based on ROC-AUC on the validation set
+- Retrains the best model on the full training data
+- Evaluates on the real-distribution test set
+- Sweeps multiple probability thresholds to analyze recall/precision trade-offs
+- Picks a "high-recall" operating threshold (targeting recall>=0.75 if possible)
+- Trains a shallow surrogate tree for explainability
+- Computes SHAP values (if shap is installed)
+- Saves model, preprocessors, metrics, surrogate tree, and SHAP data.
 """
 
 import os
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.ensemble import RandomForestClassifier
@@ -17,7 +35,9 @@ from sklearn.metrics import (
     roc_auc_score,
     accuracy_score,
     confusion_matrix,
+    precision_recall_fscore_support,
 )
+from sklearn.model_selection import train_test_split
 import joblib
 
 # Pre-generated datasets from generate_datasets.py
@@ -35,318 +55,530 @@ def main():
         raise FileNotFoundError(
             "Train/test files not found. Run `python generate_datasets.py` first."
         )
+
     df_train_full = pd.read_csv(TRAIN_PATH)
     df_test_full = pd.read_csv(TEST_PATH)
 
     target_col = "IsArrDelayed"
 
     # Feature selection: ONLY pre-departure features available at booking/scheduling time
-    # We exclude post-departure features (DepDelay, TaxiOut, AirTime) to avoid data leakage
-    # Instead, we'll use richer feature engineering and a stronger model to compensate
+    # (no DepDelay, TaxiOut, AirTime, etc., to avoid data leakage)
     feature_cols_candidates = [
-        # Temporal features (rich calendar encoding)
-        "DayOfWeek", "DayofMonth", "DepHour",
-        "Month", "Quarter", "Year",
-        
+        # Temporal features
+        "DayOfWeek",
+        "DayofMonth",
+        "DepHour",
+        "Month",
+        "Quarter",
+        "Year",
         # Route/distance
-        "Distance", "DistanceGroup",
-        
+        "Distance",
+        "DistanceGroup",
         # Scheduled departure time features
-        "CRSDepTime", "DepTimeBlk",
-        
-        # Categorical features (will be encoded)
-        "Airline", "Origin", "Dest",
-        "DepTimeOfDay", "DayOfWeekName", "MonthName",
+        "CRSDepTime",
+        "DepTimeBlk",
+        # Categorical features
+        "Airline",
+        "Origin",
+        "Dest",
+        "DepTimeOfDay",
+        "DayOfWeekName",
+        "MonthName",
     ]
 
-    # Filter to only columns that exist in the dataframe
+    # Keep only columns that actually exist in the data
     feature_cols = [c for c in feature_cols_candidates if c in df_train_full.columns]
-    
+
     print(f"\nSelected {len(feature_cols)} features:")
     for i, col in enumerate(feature_cols, 1):
         print(f"  {i}. {col}")
 
     # Split train/test from prepared files (already stratified by generate_datasets)
-    X_train = df_train_full[feature_cols].copy()
+    X_train_df = df_train_full[feature_cols].copy()
     y_train = df_train_full[target_col].astype(int)
-    X_test = df_test_full[feature_cols].copy()
+    X_test_df = df_test_full[feature_cols].copy()
     y_test = df_test_full[target_col].astype(int)
 
-    print(f"Train size: {X_train.shape[0]:,} rows")
-    print(f"Test size:  {X_test.shape[0]:,} rows")
-    print(f"Delay rate in train: {y_train.mean():.3f}")
+    print(f"\nTrain size: {X_train_df.shape[0]:,} rows")
+    print(f"Test size:  {X_test_df.shape[0]:,} rows")
+    print(f"Delay rate in train (balanced set): {y_train.mean():.3f}")
 
     # -----------------------------
-    # 2. Preprocessing: Handle missing values and encode categoricals
+    # 2. Preprocessing: missing values & encoding
     # -----------------------------
-    # Separate categorical and numerical features
-    # Check for object dtype and also category dtype (pandas categorical)
-    categorical_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
-    numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-    
-    # Also check for any columns that might be strings but not detected
-    for col in X.columns:
+    # Detect categorical and numerical columns from X_train_df
+    categorical_cols = X_train_df.select_dtypes(
+        include=["object", "category"]
+    ).columns.tolist()
+    numerical_cols = X_train_df.select_dtypes(include=[np.number]).columns.tolist()
+
+    # Double-check any column not classified yet
+    for col in X_train_df.columns:
         if col not in categorical_cols and col not in numerical_cols:
-            # Check if it's actually categorical
-            if X[col].dtype == 'object' or (hasattr(X[col].dtype, 'categories')):
+            if (
+                X_train_df[col].dtype == "object"
+                or pd.api.types.is_categorical_dtype(X_train_df[col])
+            ):
                 categorical_cols.append(col)
             else:
                 numerical_cols.append(col)
-    
+
     print(f"\nCategorical features ({len(categorical_cols)}): {categorical_cols}")
     print(f"Numerical features ({len(numerical_cols)}): {numerical_cols}")
-    
-    # Initialize preprocessors (will be None if not needed)
+
+    # Initialize preprocessors
     imputer_num = None
     scaler = None
     label_encoders = {}
-    
-    # Handle missing values: impute with median for numerical
-    # (matching the reference notebook approach)
+
+    # Numerical: impute + scale (fit on full train df to keep it simple)
+    X_train = X_train_df.copy()
+    X_test = X_test_df.copy()
+
     if len(numerical_cols) > 0:
-        imputer_num = SimpleImputer(strategy='median')
+        imputer_num = SimpleImputer(strategy="median")
         X_train[numerical_cols] = imputer_num.fit_transform(X_train[numerical_cols])
         X_test[numerical_cols] = imputer_num.transform(X_test[numerical_cols])
-        
-        # Standardize numerical features
+
         scaler = StandardScaler()
         X_train[numerical_cols] = scaler.fit_transform(X_train[numerical_cols])
         X_test[numerical_cols] = scaler.transform(X_test[numerical_cols])
-    
-    # Use LabelEncoder for categoricals (like the reference notebook)
+
+    # Categorical: LabelEncoder per column
     if len(categorical_cols) > 0:
         for col in categorical_cols:
             le = LabelEncoder()
-            
-            # Handle pandas Categorical dtype: convert to object first
-            if isinstance(X_train[col].dtype, pd.CategoricalDtype):
-                X_train[col] = X_train[col].astype(str)
-                X_test[col] = X_test[col].astype(str)
-            
-            # Fill NaN values with a placeholder before encoding
-            X_train[col] = X_train[col].fillna('Unknown').astype(str)
-            X_test[col] = X_test[col].fillna('Unknown').astype(str)
-            
-            # Fit on train, transform both train and test
+            X_train[col] = X_train[col].fillna("Unknown").astype(str)
+            X_test[col] = X_test[col].fillna("Unknown").astype(str)
+
+            # Fit encoder on train
             X_train[col] = le.fit_transform(X_train[col])
-            # Handle unknown categories in test set
+
+            # Handle unknown categories in test
             test_values = X_test[col].astype(str)
             unknown_mask = ~test_values.isin(le.classes_)
             if unknown_mask.any():
-                # Replace unknown with most common class
                 most_common = le.classes_[0]
                 test_values[unknown_mask] = most_common
             X_test[col] = le.transform(test_values)
+
             label_encoders[col] = le
-    
-    # Convert all columns to numeric and then to numpy arrays for sklearn
-    # This ensures no string values remain
+
+    # Ensure everything is numeric
     for col in X_train.columns:
-        X_train[col] = pd.to_numeric(X_train[col], errors='coerce')
-        X_test[col] = pd.to_numeric(X_test[col], errors='coerce')
-    
-    # Fill any remaining NaN values (from conversion errors) with 0
+        X_train[col] = pd.to_numeric(X_train[col], errors="coerce")
+        X_test[col] = pd.to_numeric(X_test[col], errors="coerce")
+
+    # Fill any remaining NaN
     X_train = X_train.fillna(0)
     X_test = X_test.fillna(0)
-    
-    # Convert to numpy arrays for sklearn compatibility
-    X_train = X_train.values.astype(float)
-    X_test = X_test.values.astype(float)
+
+    # Convert to numpy arrays for model training
+    X_train_array = X_train.values.astype(float)
+    X_test_array = X_test.values.astype(float)
 
     # -----------------------------
-    # 3. Build model (matching reference notebook parameters)
+    # 3. Internal train/validation split
     # -----------------------------
-    # Use a stronger model to compensate for not using post-departure features
-    # XGBoost typically performs better than RandomForest on tabular data
+    print("\nCreating internal train/validation split for model selection...")
+
+    X_tr, X_val, y_tr, y_val = train_test_split(
+        X_train_array,
+        y_train,
+        test_size=0.2,
+        stratify=y_train,
+        random_state=42,
+    )
+
+    print(f"Train subset: {X_tr.shape[0]:,} rows")
+    print(f"Validation subset: {X_val.shape[0]:,} rows")
+
+    # -----------------------------
+    # 4. Define candidate models & hyperparameters
+    # -----------------------------
+    print("\nDetecting available training hardware and XGBoost...")
+
+    gpu_available = False
+    xgb_available = False
+    xgb = None
+
     try:
-        from xgboost import XGBClassifier
-        print("Using XGBoost for better performance...")
-        model = XGBClassifier(
-            n_estimators=300,
-            max_depth=8,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=-1,
-            eval_metric='logloss',
-            scale_pos_weight=(y_train == 0).sum() / (y_train == 1).sum(),  # handle imbalance
-        )
+        import xgboost as xgb
+
+        xgb_available = True
+        try:
+            # Test GPU availability with new XGBoost API (device="cuda")
+            _ = xgb.XGBClassifier(tree_method="hist", device="cuda")
+            gpu_available = True
+            print("✓ XGBoost detected and GPU (CUDA) is available.")
+        except Exception:
+            print("⚠ XGBoost detected but GPU not available / not usable. Will use CPU.")
+            gpu_available = False
     except ImportError:
-        print("XGBoost not available, using RandomForest with stronger settings...")
-        # Fallback to RandomForest with more trees and better tuning
-        model = RandomForestClassifier(
-            n_estimators=500,      # more trees to compensate
-            max_depth=20,          # deeper trees
-            min_samples_split=10,
-            min_samples_leaf=5,
-            n_jobs=-1,
-            random_state=42,
-            class_weight="balanced_subsample",  # handle class imbalance
+        print("⚠ XGBoost not installed. Will use only RandomForest.")
+        xgb_available = False
+        gpu_available = False
+
+    candidates = []
+
+    # XGBoost candidates (GPU or CPU)
+    if xgb_available:
+        base_xgb_params = {
+            "n_estimators": 300,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "random_state": 42,
+            "n_jobs": -1,
+            "eval_metric": "logloss",
+        }
+
+        # Handle imbalance with scale_pos_weight (even though train is balanced, it's safe)
+        pos = (y_tr == 1).sum()
+        neg = (y_tr == 0).sum()
+        scale_pos_weight = neg / max(pos, 1)
+
+        depths = [4, 6, 8]
+        lrs = [0.1, 0.05]
+
+        for max_depth in depths:
+            for lr in lrs:
+                params = base_xgb_params.copy()
+                params.update(
+                    {
+                        "max_depth": max_depth,
+                        "learning_rate": lr,
+                        "scale_pos_weight": scale_pos_weight,
+                        "tree_method": "hist",
+                    }
+                )
+                if gpu_available:
+                    params["device"] = "cuda"
+                    device_label = "gpu"
+                else:
+                    device_label = "cpu"
+
+                candidates.append(
+                    {
+                        "name": f"xgb_{device_label}_depth{max_depth}_lr{lr}",
+                        "type": "xgb",
+                        "params": params,
+                    }
+                )
+
+    # RandomForest candidates
+    rf_configs = [
+        {
+            "n_estimators": 300,
+            "max_depth": 20,
+            "min_samples_split": 10,
+            "min_samples_leaf": 5,
+        },
+        {
+            "n_estimators": 500,
+            "max_depth": None,
+            "min_samples_split": 10,
+            "min_samples_leaf": 4,
+        },
+    ]
+
+    for i, cfg in enumerate(rf_configs, 1):
+        params = cfg.copy()
+        params.update(
+            {
+                "n_jobs": -1,
+                "random_state": 42,
+                "class_weight": "balanced_subsample",
+            }
+        )
+        candidates.append(
+            {
+                "name": f"rf_{i}",
+                "type": "rf",
+                "params": params,
+            }
         )
 
-    # -----------------------------
-    # 4. Train
-    # -----------------------------
-    print("\nTraining model...")
-    model.fit(X_train, y_train)
+    print(f"\nTotal candidate models to evaluate: {len(candidates)}")
 
     # -----------------------------
-    # 5. Evaluate
+    # 5. Model selection on validation set
     # -----------------------------
-    print("\nEvaluating model on test set...")
+    best_model = None
+    best_name = None
+    best_auc = -np.inf
+    best_acc = -np.inf
+    best_type = None
+    best_params = None
 
-    y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]
+    for cand in candidates:
+        name = cand["name"]
+        mtype = cand["type"]
+        params = cand["params"]
+        print(f"\nTraining candidate: {name} ({mtype})")
 
-    # Accuracy
+        if mtype == "xgb":
+            model = xgb.XGBClassifier(**params)
+        else:
+            model = RandomForestClassifier(**params)
+
+        model.fit(X_tr, y_tr)
+
+        y_val_proba = model.predict_proba(X_val)[:, 1]
+        y_val_pred = model.predict(X_val)
+
+        auc = roc_auc_score(y_val, y_val_proba)
+        acc = accuracy_score(y_val, y_val_pred)
+
+        print(f"  -> Val ROC-AUC: {auc:.3f} | Val Accuracy: {acc:.3f}")
+
+        # Select by best AUC, break ties with Accuracy
+        if (auc > best_auc) or (auc == best_auc and acc > best_acc):
+            best_auc = auc
+            best_acc = acc
+            best_model = model
+            best_name = name
+            best_type = mtype
+            best_params = params
+
+    print("\n==============================")
+    print("Best candidate model selected:")
+    print(f"  Name: {best_name}")
+    print(f"  Type: {best_type}")
+    print(f"  Val ROC-AUC: {best_auc:.3f}")
+    print(f"  Val Accuracy: {best_acc:.3f}")
+    print("==============================")
+
+    # -----------------------------
+    # 6. Retrain best model on FULL training set
+    # -----------------------------
+    print("\nRetraining best model on FULL balanced training data...")
+
+    if best_type == "xgb":
+        final_model = xgb.XGBClassifier(**best_params)
+    else:
+        final_model = RandomForestClassifier(**best_params)
+
+    final_model.fit(X_train_array, y_train)
+
+    # -----------------------------
+    # 7. Evaluate on real-distribution test set (threshold = 0.5)
+    # -----------------------------
+    print("\nEvaluating FINAL model on REAL test set (threshold=0.5)...")
+
+    y_proba = final_model.predict_proba(X_test_array)[:, 1]
+    default_threshold = 0.5
+    y_pred = (y_proba >= default_threshold).astype(int)
+
     acc = accuracy_score(y_test, y_pred)
-    print(f"\nAccuracy: {acc:.3f}")
+    print(f"\nTest Accuracy (thr=0.5): {acc:.3f}")
 
-    print("\nClassification report:")
+    print("\nClassification report (test, thr=0.5):")
     print(classification_report(y_test, y_pred, digits=3))
 
     roc_auc = roc_auc_score(y_test, y_proba)
-    print(f"ROC-AUC: {roc_auc:.3f}")
+    print(f"Test ROC-AUC: {roc_auc:.3f}")
 
-    # Confusion matrix
     cm = confusion_matrix(y_test, y_pred)
-    print("\nConfusion matrix (rows=true, cols=pred):")
+    print("\nConfusion matrix on test (rows=true, cols=pred, thr=0.5):")
     print(cm)
 
     # -----------------------------
-    # 6. Calculate additional metrics for visualization
+    # 8. Threshold sweep for recall/precision trade-off
+    # -----------------------------
+    print("\nSweeping thresholds to analyze recall/precision trade-offs...")
+
+    thresholds_to_try = np.linspace(0.1, 0.9, 17)  # 0.10, 0.15, ..., 0.90
+    threshold_metrics = []
+
+    for thr in thresholds_to_try:
+        y_pred_thr = (y_proba >= thr).astype(int)
+        acc_thr = accuracy_score(y_test, y_pred_thr)
+        prec, rec, f1, _ = precision_recall_fscore_support(
+            y_test, y_pred_thr, zero_division=0
+        )
+
+        metrics_thr = {
+            "threshold": float(thr),
+            "accuracy": float(acc_thr),
+            "precision_0": float(prec[0]),
+            "recall_0": float(rec[0]),
+            "f1_0": float(f1[0]),
+            "precision_1": float(prec[1]),
+            "recall_1": float(rec[1]),
+            "f1_1": float(f1[1]),
+        }
+        threshold_metrics.append(metrics_thr)
+
+    print("\nThreshold sweep results (class 1 = delayed):")
+    for m in threshold_metrics:
+        print(
+            f"  thr={m['threshold']:.2f} | "
+            f"acc={m['accuracy']:.3f} | "
+            f"prec_1={m['precision_1']:.3f} | "
+            f"rec_1={m['recall_1']:.3f} | "
+            f"f1_1={m['f1_1']:.3f}"
+        )
+
+    # Pick a "high recall" operating point:
+    # 1) Prefer thresholds with recall_1 >= 0.75, choose the one with best f1_1
+    # 2) If none achieve 0.75, choose the one with maximum recall_1
+    high_recall_candidates = [m for m in threshold_metrics if m["recall_1"] >= 0.75]
+
+    if high_recall_candidates:
+        best_high = max(high_recall_candidates, key=lambda m: m["f1_1"])
+        print(
+            f"\nHigh-recall operating point found (recall_1 >= 0.75): "
+            f"thr={best_high['threshold']:.2f}, "
+            f"recall_1={best_high['recall_1']:.3f}, "
+            f"precision_1={best_high['precision_1']:.3f}, "
+            f"f1_1={best_high['f1_1']:.3f}, "
+            f"accuracy={best_high['accuracy']:.3f}"
+        )
+    else:
+        best_high = max(threshold_metrics, key=lambda m: m["recall_1"])
+        print(
+            f"\nNo threshold reached recall_1 >= 0.75. "
+            f"Best recall_1 achieved: thr={best_high['threshold']:.2f}, "
+            f"recall_1={best_high['recall_1']:.3f}, "
+            f"precision_1={best_high['precision_1']:.3f}, "
+            f"f1_1={best_high['f1_1']:.3f}, "
+            f"accuracy={best_high['accuracy']:.3f}"
+        )
+
+    high_recall_threshold = best_high["threshold"]
+
+    # -----------------------------
+    # 9. Extra metrics & explainability helpers
     # -----------------------------
     from sklearn.metrics import roc_curve
     from sklearn.tree import DecisionTreeClassifier
-    
-    # Calculate ROC curve data
-    fpr, tpr, thresholds = roc_curve(y_test, y_proba)
-    
-    # Get feature importances (if available)
+
+    # ROC curve data
+    fpr, tpr, roc_thresholds = roc_curve(y_test, y_proba)
+
+    # Feature importances
     feature_importances = None
-    if hasattr(model, 'feature_importances_'):
-        feature_importances = model.feature_importances_
-    
-    # Train a shallow decision tree as a surrogate model for visualization
+    if hasattr(final_model, "feature_importances_"):
+        feature_importances = final_model.feature_importances_
+
+    # Shallow surrogate tree for explanation
     print("\nTraining shallow decision tree for explainability...")
     surrogate_tree = DecisionTreeClassifier(
-        max_depth=3,  # shallow for visualization
+        max_depth=3,
         random_state=42,
-        class_weight="balanced"
+        class_weight="balanced",
     )
-    surrogate_tree.fit(X_train, y_train)
-    
-    # Calculate SHAP values for explainability
+    surrogate_tree.fit(X_train_array, y_train)
+
+    # -----------------------------
+    # 10. SHAP values (if shap installed)
+    # -----------------------------
     print("\nCalculating SHAP values for explainability...")
+    shap_available = False
+    shap_data = None
+
     try:
         import shap
-        
-        # Use TreeExplainer for tree-based models (much faster than KernelExplainer)
-        explainer = shap.TreeExplainer(model)
-        
-        # Sample test data for SHAP calculation (to save memory and time)
-        # Use up to 100 samples for detailed explanations
-        n_shap_samples = min(100, len(X_test))
-        X_test_sample = X_test[:n_shap_samples]
+
+        # Use TreeExplainer (works for XGBoost and RandomForest)
+        explainer = shap.TreeExplainer(final_model)
+
+        # Sample up to 100 test samples for SHAP
+        n_shap_samples = min(100, len(X_test_array))
+        X_test_sample = X_test_array[:n_shap_samples]
         y_test_sample = y_test[:n_shap_samples]
-        
+
         print(f"Computing SHAP values for {n_shap_samples} test samples...")
         shap_values = explainer.shap_values(X_test_sample, check_additivity=False)
-        
-        # For binary classification, shap_values is a list [class0, class1]
-        # We want the values for class 1 (delayed)
+
+        # For binary classification, shap_values may be [class0, class1]
         if isinstance(shap_values, list):
-            shap_values_delayed = np.array(shap_values[1])  # Ensure numpy array
-            expected_value_delayed = explainer.expected_value[1] if isinstance(explainer.expected_value, (list, np.ndarray)) and len(explainer.expected_value) > 1 else explainer.expected_value
+            shap_values_delayed = np.array(shap_values[1])
+            if isinstance(explainer.expected_value, (list, np.ndarray)) and len(
+                explainer.expected_value
+            ) > 1:
+                expected_value_delayed = explainer.expected_value[1]
+            else:
+                expected_value_delayed = explainer.expected_value
         else:
-            shap_values_delayed = np.array(shap_values)  # Ensure numpy array
+            shap_values_delayed = np.array(shap_values)
             expected_value_delayed = explainer.expected_value
-        
-        # Ensure y_test_sample is a pandas Series or array
-        if isinstance(y_test, pd.Series):
-            y_test_sample = y_test.iloc[:n_shap_samples]
-        else:
-            y_test_sample = y_test[:n_shap_samples]
-        
-        # Ensure X_test_sample is numpy array
-        if not isinstance(X_test_sample, np.ndarray):
-            X_test_sample = np.array(X_test_sample)
-        
-        # Validate shapes
-        if shap_values_delayed.shape[0] != X_test_sample.shape[0]:
-            print(f"⚠ Warning: SHAP values shape {shap_values_delayed.shape} doesn't match X_test_sample shape {X_test_sample.shape}")
-        
-        if shap_values_delayed.shape[1] != len(feature_cols):
-            print(f"⚠ Warning: SHAP values feature count {shap_values_delayed.shape[1]} doesn't match feature count {len(feature_cols)}")
-        
+
         shap_data = {
-            'explainer': explainer,
-            'shap_values': shap_values_delayed,  # Shape: (n_samples, n_features)
-            'shap_values_all_classes': shap_values,  # Keep both classes for flexibility
-            'X_test_sample': X_test_sample,  # Shape: (n_samples, n_features)
-            'y_test_sample': y_test_sample,
-            'expected_value': expected_value_delayed,
-            'feature_names': feature_cols,  # List of length n_features
+            "explainer": explainer,
+            "shap_values": shap_values_delayed,  # (n_samples, n_features)
+            "shap_values_all_classes": shap_values,
+            "X_test_sample": X_test_sample,
+            "y_test_sample": y_test_sample,
+            "expected_value": expected_value_delayed,
+            "feature_names": feature_cols,
         }
-        
-        print(f"✓ SHAP values computed successfully")
+
         shap_available = True
-        
+        print("✓ SHAP values computed successfully.")
     except ImportError:
         print("⚠ SHAP library not available. Install with: pip install shap")
-        shap_data = None
         shap_available = False
+        shap_data = None
     except Exception as e:
         print(f"⚠ Error computing SHAP values: {e}")
-        shap_data = None
         shap_available = False
-    
+        shap_data = None
+
     # -----------------------------
-    # 7. Save trained model, preprocessors, and metrics
+    # 11. Save model, preprocessors & metrics
     # -----------------------------
     os.makedirs("models", exist_ok=True)
-    
-    # Save model
+
+    # Model
     model_path = os.path.join("models", "arrival_delay_model.pkl")
-    joblib.dump(model, model_path)
-    
-    # Save preprocessors for inference
+    joblib.dump(final_model, model_path)
+
+    # Preprocessors
     preprocessor_path = os.path.join("models", "preprocessors.pkl")
     preprocessors = {
-        'imputer_num': imputer_num,
-        'label_encoders': label_encoders,
-        'scaler': scaler,
-        'categorical_cols': categorical_cols,
-        'numerical_cols': numerical_cols,
-        'feature_cols': feature_cols,
+        "imputer_num": imputer_num,
+        "label_encoders": label_encoders,
+        "scaler": scaler,
+        "categorical_cols": categorical_cols,
+        "numerical_cols": numerical_cols,
+        "feature_cols": feature_cols,
     }
     joblib.dump(preprocessors, preprocessor_path)
-    
-    # Save metrics and additional data for visualization
+
+    # Metrics & curves
     metrics_path = os.path.join("models", "metrics.pkl")
     metrics = {
-        'accuracy': acc,
-        'roc_auc': roc_auc,
-        'confusion_matrix': cm,
-        'fpr': fpr,
-        'tpr': tpr,
-        'thresholds': thresholds,
-        'feature_importances': feature_importances,
-        'classification_report': classification_report(y_test, y_pred, output_dict=True),
-        'class_names': ['On-Time', 'Delayed'],
-        'n_train': len(X_train),
-        'n_test': len(X_test),
-        'delay_rate_train': y_train.mean(),
-        'delay_rate_test': y_test.mean(),
+        "accuracy_default_thr": acc,
+        "roc_auc": roc_auc,
+        "confusion_matrix_default_thr": cm,
+        "fpr": fpr,
+        "tpr": tpr,
+        "roc_thresholds": roc_thresholds,
+        "feature_importances": feature_importances,
+        "classification_report_default_thr": classification_report(
+            y_test, y_pred, output_dict=True
+        ),
+        "class_names": ["On-Time", "Delayed"],
+        "n_train": len(X_train_array),
+        "n_test": len(X_test_array),
+        "delay_rate_train": y_train.mean(),
+        "delay_rate_test": y_test.mean(),
+        "best_model_name": best_name,
+        "best_model_type": best_type,
+        "best_model_val_auc": best_auc,
+        "best_model_val_acc": best_acc,
+        "default_threshold": float(default_threshold),
+        "high_recall_threshold": float(high_recall_threshold),
+        "threshold_metrics": threshold_metrics,
     }
     joblib.dump(metrics, metrics_path)
-    
-    # Save surrogate tree
+
+    # Surrogate tree
     surrogate_path = os.path.join("models", "surrogate_tree.pkl")
     joblib.dump(surrogate_tree, surrogate_path)
-    
-    # Save SHAP data if available
+
+    # SHAP data
     if shap_available and shap_data is not None:
         shap_path = os.path.join("models", "shap_data.pkl")
         joblib.dump(shap_data, shap_path)
@@ -356,6 +588,10 @@ def main():
     print(f"Preprocessors saved to: {preprocessor_path}")
     print(f"Metrics saved to: {metrics_path}")
     print(f"Surrogate tree saved to: {surrogate_path}")
+    print(
+        f"Best model was: {best_name} ({best_type}) with Val AUC={best_auc:.3f}, "
+        f"default_thr={default_threshold}, high_recall_thr={high_recall_threshold:.2f}"
+    )
 
 
 if __name__ == "__main__":
