@@ -353,22 +353,24 @@ elif viz_type == "Route Analysis":
     
     route_agg = aggregate_by_route(df_filtered, min_flights=50)
     
-    top_n = st.slider("Number of Routes to Display", 10, 50, 20)
+    col1, col2 = st.columns(2)
     
-    sort_by = st.radio(
-        "Sort By",
-        ["Average Delay", "Delay Rate", "Cancellation Rate", "Flight Volume"],
-        horizontal=True
-    )
+    with col1:
+        top_n = st.slider("Number of Routes to Display", 10, 50, 20)
+    
+    with col2:
+        sort_by = st.radio(
+            "Sort By",
+            ["Average Delay", "Delay Rate", "Cancellation Rate"],
+            horizontal=True
+        )
     
     if sort_by == "Average Delay":
         sort_col = 'avg_arr_delay'
     elif sort_by == "Delay Rate":
         sort_col = 'arr_delay_rate'
-    elif sort_by == "Cancellation Rate":
-        sort_col = 'cancel_rate'
     else:
-        sort_col = 'total_flights'
+        sort_col = 'cancel_rate'
     
     top_routes = route_agg.nlargest(top_n, sort_col)
     
@@ -382,10 +384,59 @@ elif viz_type == "Route Analysis":
         color_continuous_scale='Reds'
     )
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Volume vs Delay Rate analysis
+    st.markdown("#### Flight Volume vs Delay Rate")
+    st.markdown("Understanding the relationship between route popularity and delay performance")
+    
+    fig = px.scatter(
+        route_agg,
+        x='total_flights',
+        y='arr_delay_rate',
+        size='avg_arr_delay',
+        hover_data=['Route'],
+        title="Route Volume vs Delay Rate (bubble size = average delay)",
+        labels={
+            'total_flights': 'Number of Flights (Volume)',
+            'arr_delay_rate': 'Delay Rate (>15 min)',
+            'avg_arr_delay': 'Average Delay (min)'
+        },
+        color='arr_delay_rate',
+        color_continuous_scale='Reds'
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Highlight problematic routes (high volume + high delay rate)
+    problematic = route_agg[
+        (route_agg['total_flights'] > route_agg['total_flights'].quantile(0.75)) &
+        (route_agg['arr_delay_rate'] > route_agg['arr_delay_rate'].quantile(0.75))
+    ].nlargest(10, 'total_flights')
+    
+    if not problematic.empty:
+        st.markdown("**⚠️ High-Volume Routes with High Delay Rates:**")
+        st.dataframe(
+            problematic[['Route', 'total_flights', 'arr_delay_rate', 'avg_arr_delay']].round(2),
+            use_container_width=True,
+            hide_index=True
+        )
 
 # Visualization 6: Delay Categories
 elif viz_type == "Delay Categories":
     st.markdown("### Delay Category Distribution")
+    
+    # Add legend/definitions
+    with st.expander("📖 Delay Category Definitions", expanded=False):
+        st.markdown("""
+        **Delay Categories:**
+        - **Early**: Arrival delay < 0 minutes (arrived early)
+        - **On Time**: Arrival delay = 0 minutes (exactly on time)
+        - **Small Delay**: Arrival delay 1-15 minutes
+        - **Moderate Delay**: Arrival delay 16-60 minutes
+        - **Large Delay**: Arrival delay 61-180 minutes
+        - **Very Large Delay**: Arrival delay > 180 minutes
+        
+        **Note**: Flights with delay ≤ 15 minutes (Early + On Time + Small Delay) are considered "on-time" for operational purposes.
+        """)
     
     category_counts = df_filtered['ArrDelayCategory'].value_counts()
     
@@ -444,51 +495,28 @@ elif viz_type == "Correlations":
     corr_data = df_filtered[numeric_cols].dropna()
     corr_matrix = corr_data.corr()
     
-    fig = px.imshow(
-        corr_matrix,
-        labels=dict(color="Correlation"),
+    # Create heatmap with text annotations showing correlation values
+    fig = go.Figure(data=go.Heatmap(
+        z=corr_matrix.values,
         x=corr_matrix.columns,
         y=corr_matrix.columns,
-        color_continuous_scale='RdBu_r',
+        colorscale='RdBu_r',
         zmin=-1,
         zmax=1,
-        title="Correlation Matrix"
+        text=corr_matrix.values.round(2),
+        texttemplate='%{text}',
+        textfont={"size": 10},
+        colorbar=dict(title="Correlation")
+    ))
+    
+    fig.update_layout(
+        title="Correlation Matrix (values shown in cells)",
+        height=600,
+        xaxis_title="",
+        yaxis_title=""
     )
+    
     st.plotly_chart(fig, use_container_width=True)
-    
-    # Scatter plots
-    st.markdown("#### Key Relationships")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Departure vs Arrival Delay
-        sample = corr_data.sample(min(10000, len(corr_data)))
-        fig = px.scatter(
-            sample,
-            x='DepDelayMinutes',
-            y='ArrDelayMinutes',
-            title="Departure vs Arrival Delay",
-            labels={'DepDelayMinutes': 'Departure Delay (min)', 'ArrDelayMinutes': 'Arrival Delay (min)'},
-            opacity=0.3
-        )
-        fig.update_xaxes(range=[-50, 200])
-        fig.update_yaxes(range=[-50, 200])
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # TaxiOut vs Arrival Delay
-        fig = px.scatter(
-            sample,
-            x='TaxiOut',
-            y='ArrDelayMinutes',
-            title="Taxi Out Time vs Arrival Delay",
-            labels={'TaxiOut': 'Taxi Out Time (min)', 'ArrDelayMinutes': 'Arrival Delay (min)'},
-            opacity=0.3
-        )
-        fig.update_xaxes(range=[0, 100])
-        fig.update_yaxes(range=[-50, 200])
-        st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 st.markdown("💡 **Tip**: Use the sidebar filters to focus on specific airlines, time periods, or flight characteristics!")

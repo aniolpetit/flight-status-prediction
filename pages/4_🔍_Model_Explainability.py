@@ -572,6 +572,14 @@ with tab3:
     the impact on delay risk in real-time.
     """)
     
+    st.info("""
+    **📝 Note on CRSDepTime Format**: 
+    CRSDepTime uses HHMM format (24-hour time):
+    - Example: 1430 = 2:30 PM (14:30)
+    - Example: 2359 = 11:59 PM (23:59)
+    - Range: 1 to 2359
+    """)
+    
     if shap_available and shap_data is not None:
         # Load original data to get feature ranges
         @st.cache_data
@@ -611,7 +619,15 @@ with tab3:
                 'Importance': metrics['feature_importances']
             }).sort_values('Importance', ascending=False)
             
+            # Filter out Month (keep only MonthName for readability)
             top_features = feat_imp_df.head(10)['Feature'].tolist()
+            if 'Month' in top_features and 'MonthName' in top_features:
+                top_features = [f for f in top_features if f != 'Month']  # Remove Month, keep MonthName
+            elif 'Month' in top_features:
+                # If Month is in top but MonthName is not, try to replace it
+                if 'MonthName' in feature_names:
+                    idx = top_features.index('Month')
+                    top_features[idx] = 'MonthName'
             
             # Helper function to convert original value to encoded
             def convert_to_encoded(feat_name, original_val):
@@ -719,24 +735,40 @@ with tab3:
                         feat_max_orig = convert_to_original(feat, feat_max_enc)
                         feat_median_orig = (feat_min_orig + feat_max_orig) / 2
                     
-                    # Determine step size based on feature type
-                    if feat in ['Year']:
-                        step = 1.0
-                    elif feat in ['Month', 'DayofMonth', 'DayOfWeek', 'DepHour']:
-                        step = 1.0
-                    elif feat in ['Distance']:
-                        step = 50.0
+                    # Special handling for CRSDepTime (must be int)
+                    if feat == 'CRSDepTime':
+                        # Convert to readable format for display
+                        crs_hour = int(original_value) // 100
+                        crs_min = int(original_value) % 100
+                        readable_time = f"{crs_hour:02d}:{crs_min:02d}"
+                        
+                        new_value_orig = st.slider(
+                            f"{feat} (Format: HHMM, e.g., 1430 = 14:30, 2359 = 23:59)",
+                            min_value=int(feat_min_orig),
+                            max_value=int(feat_max_orig),
+                            value=int(original_value),
+                            step=1,  # Must be int for int sliders
+                            help=f"Current: {int(original_value)} ({readable_time})"
+                        )
                     else:
-                        step = (feat_max_orig - feat_min_orig) / 100
-                    
-                    new_value_orig = st.slider(
-                        feat,
-                        min_value=feat_min_orig,
-                        max_value=feat_max_orig,
-                        value=float(original_value),
-                        step=step,
-                        help=f"Original value: {original_value:.2f}"
-                    )
+                        # Determine step size based on feature type
+                        if feat in ['Year']:
+                            step = 1.0
+                        elif feat in ['Month', 'DayofMonth', 'DayOfWeek', 'DepHour']:
+                            step = 1.0
+                        elif feat in ['Distance']:
+                            step = 50.0
+                        else:
+                            step = (feat_max_orig - feat_min_orig) / 100
+                        
+                        new_value_orig = st.slider(
+                            feat,
+                            min_value=feat_min_orig,
+                            max_value=feat_max_orig,
+                            value=float(original_value),
+                            step=step,
+                            help=f"Original value: {original_value:.2f}"
+                        )
                     adjusted_values_original[feat_idx] = new_value_orig
                     adjusted_values_encoded[feat_idx] = convert_to_encoded(feat, new_value_orig)
             

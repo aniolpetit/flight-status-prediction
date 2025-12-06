@@ -41,9 +41,9 @@ insight_section = st.sidebar.radio(
         "1️⃣ The Delay Paradox",
         "2️⃣ Time is Everything",
         "3️⃣ Airline Performance Gap",
-        "4️⃣ Cascading Effects",
-        "5️⃣ Seasonal Patterns",
-        "6️⃣ The Distance Myth"
+        "4️⃣ Seasonal Patterns",
+        "5️⃣ The Distance Myth",
+        "6️⃣ Year-over-Year Trends"
     ]
 )
 
@@ -78,10 +78,10 @@ if insight_section == "Overview":
     
     with col3:
         st.markdown("""
-        **🔗 Cascading Effects**
-        - **98% correlation** between departure and arrival delays
-        - Taxi times strongly predict delays
-        - Distance has minimal impact on delay probability
+        **📅 Temporal Patterns**
+        - **Year-over-year** trends show significant variations
+        - **Seasonal patterns** reveal summer and winter challenges
+        - **Time of day** is the strongest predictor
         """)
     
     st.markdown("---")
@@ -406,43 +406,94 @@ elif insight_section == "3️⃣ Airline Performance Gap":
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # Delay category distribution by airline
-    st.markdown("### How Delay Categories Vary by Airline")
+    # Delay category distribution by airline - Top 5 worst and Bottom 5 best
+    st.markdown("### How Delay Categories Vary by Airline: Best vs Worst Performers")
     
-    top_airlines_list = airline_stats.nlargest(10, 'total_flights')['Airline'].tolist()
-    df_top_airlines = df[df['Airline'].isin(top_airlines_list)]
+    # Get top 5 worst and bottom 5 best by delay rate
+    worst_5 = airline_stats.nlargest(5, 'arr_delay_rate')['Airline'].tolist()
+    best_5 = airline_stats.nsmallest(5, 'arr_delay_rate')['Airline'].tolist()
     
-    cat_dist = get_delay_category_distribution(df_top_airlines, 'Airline')
+    comparison_airlines = worst_5 + best_5
+    df_comparison = df[df['Airline'].isin(comparison_airlines)]
     
-    fig = go.Figure()
+    cat_dist = get_delay_category_distribution(df_comparison, 'Airline')
     
-    category_order = ['On Time', 'Small Delay', 'Moderate Delay', 'Large Delay', 'Very Large Delay']
-    colors_map = {
-        'On Time': 'green',
-        'Small Delay': 'yellow',
-        'Moderate Delay': 'orange',
-        'Large Delay': 'red',
-        'Very Large Delay': 'darkred'
-    }
+    # Reorder: worst first, then best
+    airline_order = worst_5 + best_5
+    cat_dist = cat_dist.reindex([a for a in airline_order if a in cat_dist.index])
     
-    for cat in category_order:
-        if cat in cat_dist.columns:
-            fig.add_trace(go.Bar(
-                name=cat,
-                x=cat_dist.index,
-                y=cat_dist[cat],
-                marker_color=colors_map[cat]
-            ))
+    col1, col2 = st.columns(2)
     
-    fig.update_layout(
-        barmode='stack',
-        title="Delay Category Distribution by Airline (Top 10 by Volume)",
-        xaxis_title="Airline",
-        yaxis_title="Percentage of Flights (%)",
-        height=500
-    )
+    with col1:
+        st.markdown("#### ❌ Top 5 Worst Performers (Highest Delay Rate)")
+        worst_df = df[df['Airline'].isin(worst_5)]
+        worst_cat_dist = get_delay_category_distribution(worst_df, 'Airline')
+        worst_cat_dist = worst_cat_dist.reindex([a for a in worst_5 if a in worst_cat_dist.index])
+        
+        fig_worst = go.Figure()
+        category_order = ['On Time', 'Small Delay', 'Moderate Delay', 'Large Delay', 'Very Large Delay']
+        colors_map = {
+            'On Time': 'green',
+            'Small Delay': 'yellow',
+            'Moderate Delay': 'orange',
+            'Large Delay': 'red',
+            'Very Large Delay': 'darkred'
+        }
+        
+        for cat in category_order:
+            if cat in worst_cat_dist.columns:
+                fig_worst.add_trace(go.Bar(
+                    name=cat,
+                    x=worst_cat_dist.index,
+                    y=worst_cat_dist[cat],
+                    marker_color=colors_map[cat]
+                ))
+        
+        fig_worst.update_layout(
+            barmode='stack',
+            title="Worst 5 Airlines",
+            xaxis_title="Airline",
+            yaxis_title="Percentage of Flights (%)",
+            height=400,
+            showlegend=True
+        )
+        st.plotly_chart(fig_worst, use_container_width=True)
     
-    st.plotly_chart(fig, use_container_width=True)
+    with col2:
+        st.markdown("#### ✅ Top 5 Best Performers (Lowest Delay Rate)")
+        best_df = df[df['Airline'].isin(best_5)]
+        best_cat_dist = get_delay_category_distribution(best_df, 'Airline')
+        best_cat_dist = best_cat_dist.reindex([a for a in best_5 if a in best_cat_dist.index])
+        
+        fig_best = go.Figure()
+        
+        for cat in category_order:
+            if cat in best_cat_dist.columns:
+                fig_best.add_trace(go.Bar(
+                    name=cat,
+                    x=best_cat_dist.index,
+                    y=best_cat_dist[cat],
+                    marker_color=colors_map[cat]
+                ))
+        
+        fig_best.update_layout(
+            barmode='stack',
+            title="Best 5 Airlines",
+            xaxis_title="Airline",
+            yaxis_title="Percentage of Flights (%)",
+            height=400,
+            showlegend=False
+        )
+        st.plotly_chart(fig_best, use_container_width=True)
+    
+    # Comparison table
+    st.markdown("#### 📊 Performance Comparison")
+    comparison_stats = airline_stats[airline_stats['Airline'].isin(comparison_airlines)][
+        ['Airline', 'arr_delay_rate', 'avg_arr_delay', 'total_flights']
+    ].round(2)
+    comparison_stats = comparison_stats.sort_values('arr_delay_rate', ascending=False)
+    comparison_stats.columns = ['Airline', 'Delay Rate (%)', 'Avg Delay (min)', 'Total Flights']
+    st.dataframe(comparison_stats, use_container_width=True, hide_index=True)
     
     st.success("""
     **💡 Key Insight**: 
@@ -452,121 +503,10 @@ elif insight_section == "3️⃣ Airline Performance Gap":
     - Consider airline reliability when booking, not just price!
     """)
 
-# INSIGHT 4: Cascading Effects
-elif insight_section == "4️⃣ Cascading Effects":
-    st.markdown("""
-    ## 4️⃣ Cascading Effects: How One Delay Creates Another
-    
-    **Delays don't happen in isolation.** Our correlation analysis reveals strong cascading 
-    effects throughout the flight system.
-    """)
-    
-    st.markdown("### The Departure-Arrival Connection")
-    
-    # Scatter plot with density
-    valid_data = df[['DepDelayMinutes', 'ArrDelayMinutes']].dropna()
-    sample = valid_data.sample(min(20000, len(valid_data)))
-    
-    fig = px.density_contour(
-        sample,
-        x='DepDelayMinutes',
-        y='ArrDelayMinutes',
-        title="Departure vs Arrival Delay (98% Correlation)",
-        labels={'DepDelayMinutes': 'Departure Delay (minutes)', 'ArrDelayMinutes': 'Arrival Delay (minutes)'},
-        marginal_x="histogram",
-        marginal_y="histogram"
-    )
-    
-    # Add diagonal line
-    fig.add_trace(go.Scatter(
-        x=[-50, 300],
-        y=[-50, 300],
-        mode='lines',
-        name='Perfect Correlation',
-        line=dict(dash='dash', color='red')
-    ))
-    
-    fig.update_xaxes(range=[-50, 300])
-    fig.update_yaxes(range=[-50, 300])
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Correlation matrix
-    st.markdown("### Key Correlations with Arrival Delay")
-    
-    corr_cols = ['ArrDelayMinutes', 'DepDelayMinutes', 'TaxiOut', 'TaxiIn', 'DepHour']
-    if 'Distance' in df.columns:
-        corr_cols.append('Distance')
-    
-    corr_data = df[corr_cols].dropna()
-    corr_matrix = corr_data.corr()['ArrDelayMinutes'].sort_values(ascending=False)
-    
-    corr_df = pd.DataFrame({
-        'Feature': corr_matrix.index,
-        'Correlation': corr_matrix.values
-    })
-    corr_df = corr_df[corr_df['Feature'] != 'ArrDelayMinutes']
-    
-    fig = px.bar(
-        corr_df,
-        x='Correlation',
-        y='Feature',
-        orientation='h',
-        title="Correlation with Arrival Delay",
-        labels={'Correlation': 'Pearson Correlation Coefficient'},
-        color='Correlation',
-        color_continuous_scale='RdBu_r',
-        range_color=[-1, 1]
-    )
-    fig.add_vline(x=0, line_dash="dash", line_color="black")
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Taxi time analysis
-    st.markdown("### The Taxi Time Factor")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        taxi_out_sample = df[['TaxiOut', 'ArrDelayMinutes']].dropna().sample(min(10000, len(df)))
-        fig = px.scatter(
-            taxi_out_sample,
-            x='TaxiOut',
-            y='ArrDelayMinutes',
-            title="Taxi Out Time vs Arrival Delay",
-            labels={'TaxiOut': 'Taxi Out Time (min)', 'ArrDelayMinutes': 'Arrival Delay (min)'},
-            opacity=0.3
-        )
-        fig.update_xaxes(range=[0, 100])
-        fig.update_yaxes(range=[-50, 200])
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        taxi_in_sample = df[['TaxiIn', 'ArrDelayMinutes']].dropna().sample(min(10000, len(df)))
-        fig = px.scatter(
-            taxi_in_sample,
-            x='TaxiIn',
-            y='ArrDelayMinutes',
-            title="Taxi In Time vs Arrival Delay",
-            labels={'TaxiIn': 'Taxi In Time (min)', 'ArrDelayMinutes': 'Arrival Delay (min)'},
-            opacity=0.3
-        )
-        fig.update_xaxes(range=[0, 100])
-        fig.update_yaxes(range=[-50, 200])
-        st.plotly_chart(fig, use_container_width=True)
-    
-    st.success("""
-    **💡 Key Insight**: 
-    - **98% correlation** between departure and arrival delays (nearly perfect!)
-    - Taxi times (ground operations) strongly predict delays
-    - **Airport congestion** is a major factor (reflected in taxi times)
-    - Delays cascade: one delayed flight impacts others at the gate/runway
-    """)
-
-# INSIGHT 5: Seasonal Patterns
+# INSIGHT 4: Seasonal Patterns
 elif insight_section == "5️⃣ Seasonal Patterns":
     st.markdown("""
-    ## 5️⃣ Seasonal Patterns: Summer and Winter Challenges
+    ## 4️⃣ Seasonal Patterns: Summer and Winter Challenges
     
     **Delays follow predictable seasonal patterns**, with certain months consistently 
     showing higher delay rates.
@@ -624,27 +564,33 @@ elif insight_section == "5️⃣ Seasonal Patterns":
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # Seasonal breakdown
+    # Identify actual worst months for cancellations
+    worst_cancel_months = monthly_stats.nlargest(3, 'cancel_rate')['MonthName'].tolist()
+    worst_cancel_month = worst_cancel_months[0] if worst_cancel_months else "February"
+    
+    # Seasonal breakdown - based on actual data
     st.markdown("### Seasonal Summary")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("""
-        #### ❄️ Winter Challenges
-        - **December-February**: Higher cancellation rates
-        - Weather disruptions (snow, ice)
-        - Holiday travel congestion
-        - February: Worst cancellation rate
+        st.markdown(f"""
+        #### ❄️ Winter Weather Impact
+        - **{worst_cancel_month}** typically shows highest cancellation rates
+        - Weather disruptions (snow, ice, freezing conditions)
+        - Airport de-icing operations cause delays
+        - Holiday travel volume increases congestion
+        - **Operational Note**: Airlines build in buffer time, but severe weather still causes cancellations
         """)
     
     with col2:
         st.markdown("""
-        #### ☀️ Summer Peak
-        - **June-July**: Highest average delays
-        - Peak travel season
-        - Thunderstorms and convective weather
-        - Airport capacity constraints
+        #### ☀️ Summer Operational Challenges
+        - **June-July**: Peak delays due to multiple factors
+        - **Convective weather** (thunderstorms) is common in summer
+        - Peak travel season → airport capacity constraints
+        - Higher flight volume → cascading delays
+        - **Operational Note**: Summer delays are more about system capacity than weather severity
         """)
     
     # Best and worst months
@@ -653,29 +599,37 @@ elif insight_section == "5️⃣ Seasonal Patterns":
     col1, col2 = st.columns(2)
     
     with col1:
-        worst_months = monthly_stats.nlargest(5, 'avg_delay')[['MonthName', 'avg_delay', 'delay_rate']]
-        worst_months.columns = ['Month', 'Avg Delay (min)', 'Delay Rate (%)']
-        st.markdown("#### ❌ Worst Months")
+        worst_months = monthly_stats.nlargest(5, 'avg_delay')[['MonthName', 'avg_delay', 'delay_rate', 'cancel_rate']]
+        worst_months.columns = ['Month', 'Avg Delay (min)', 'Delay Rate (%)', 'Cancel Rate (%)']
+        st.markdown("#### ❌ Worst Months (by Average Delay)")
         st.dataframe(worst_months, use_container_width=True, hide_index=True)
     
     with col2:
-        best_months = monthly_stats.nsmallest(5, 'avg_delay')[['MonthName', 'avg_delay', 'delay_rate']]
-        best_months.columns = ['Month', 'Avg Delay (min)', 'Delay Rate (%)']
-        st.markdown("#### ✅ Best Months")
+        best_months = monthly_stats.nsmallest(5, 'avg_delay')[['MonthName', 'avg_delay', 'delay_rate', 'cancel_rate']]
+        best_months.columns = ['Month', 'Avg Delay (min)', 'Delay Rate (%)', 'Cancel Rate (%)']
+        st.markdown("#### ✅ Best Months (by Average Delay)")
         st.dataframe(best_months, use_container_width=True, hide_index=True)
+    
+    # Cancellation analysis
+    st.markdown("### Cancellation Patterns")
+    worst_cancel = monthly_stats.nlargest(3, 'cancel_rate')[['MonthName', 'cancel_rate', 'avg_delay']]
+    worst_cancel.columns = ['Month', 'Cancel Rate (%)', 'Avg Delay (min)']
+    st.markdown("**Highest Cancellation Rates:**")
+    st.dataframe(worst_cancel, use_container_width=True, hide_index=True)
     
     st.success("""
     **💡 Key Insight**: 
-    - **September-November** offer the best on-time performance
-    - **June-July** have highest delays (summer thunderstorms + peak travel)
-    - **February-March** have highest cancellations (winter weather)
-    - Avoid summer and winter holidays for best reliability
-    """)
+    - **September-November** (fall) offer the best on-time performance - mild weather and moderate travel volume
+    - **June-July** have highest delays due to summer thunderstorms + peak travel season capacity constraints
+    - **Winter months** (especially {}) show highest cancellation rates due to severe weather
+    - **Practical Takeaway**: While summer and winter are peak travel times, understanding the operational 
+    factors (weather patterns, capacity constraints) helps set realistic expectations in terms of delays and cancellations.
+    """.format(worst_cancel_month))
 
-# INSIGHT 6: The Distance Myth
-elif insight_section == "6️⃣ The Distance Myth":
+# INSIGHT 5: The Distance Myth
+elif insight_section == "5️⃣ The Distance Myth":
     st.markdown("""
-    ## 6️⃣ The Distance Myth: Longer ≠ More Delayed
+    ## 5️⃣ The Distance Myth: Longer ≠ More Delayed
     
     **Contrary to popular belief, flight distance has minimal impact on delay probability.** 
     Our analysis challenges the assumption that longer flights are more prone to delays.
@@ -764,6 +718,144 @@ elif insight_section == "6️⃣ The Distance Myth":
     - Longer flights may actually have **more buffer time** built in
     - Focus on **when** and **who** you fly with, not how far
     - Short regional flights can be just as problematic as transcontinental ones
+    """)
+
+# INSIGHT 6: Year-over-Year Trends
+elif insight_section == "6️⃣ Year-over-Year Trends":
+    st.markdown("""
+    ## 6️⃣ Year-over-Year Trends: The Impact of Time and Events
+    
+    **How have flight delays changed over the years?** Our analysis reveals significant 
+    year-to-year variations, with the COVID-19 pandemic creating a dramatic shift in patterns.
+    """)
+    
+    # Yearly aggregation
+    yearly_stats = df.groupby('Year').agg(
+        avg_delay=('ArrDelayMinutes', 'mean'),
+        delay_rate=('IsArrDelayed', lambda x: x.mean() * 100),
+        cancel_rate=('Cancelled', lambda x: x.mean() * 100),
+        flights=('Cancelled', 'size')
+    ).reset_index()
+    
+    st.markdown("### Yearly Delay Trends")
+    
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=("Average Arrival Delay by Year", "Delay Rate and Cancellation Rate by Year"),
+        vertical_spacing=0.12
+    )
+    
+    # Average delay
+    fig.add_trace(
+        go.Scatter(
+            x=yearly_stats['Year'],
+            y=yearly_stats['avg_delay'],
+            mode='lines+markers',
+            name='Avg Delay',
+            line=dict(color='red', width=3),
+            marker=dict(size=12)
+        ),
+        row=1, col=1
+    )
+    
+    # Delay rate and cancellation rate
+    fig.add_trace(
+        go.Scatter(
+            x=yearly_stats['Year'],
+            y=yearly_stats['delay_rate'],
+            mode='lines+markers',
+            name='Delay Rate',
+            line=dict(color='orange', width=3),
+            marker=dict(size=12)
+        ),
+        row=2, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(
+            x=yearly_stats['Year'],
+            y=yearly_stats['cancel_rate'],
+            mode='lines+markers',
+            name='Cancel Rate',
+            line=dict(color='purple', width=3, dash='dash'),
+            marker=dict(size=12)
+        ),
+        row=2, col=1
+    )
+    
+    # Highlight COVID period
+    fig.add_vrect(x0=2020, x1=2021, fillcolor="yellow", opacity=0.2, layer="below", row=1, col=1)
+    fig.add_vrect(x0=2020, x1=2021, fillcolor="yellow", opacity=0.2, layer="below", row=2, col=1)
+    
+    fig.update_xaxes(title_text="Year", row=2, col=1)
+    fig.update_yaxes(title_text="Avg Delay (min)", row=1, col=1)
+    fig.update_yaxes(title_text="Rate (%)", row=2, col=1)
+    
+    fig.update_layout(height=700, showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Yearly comparison table
+    st.markdown("### Year-by-Year Comparison")
+    yearly_display = yearly_stats.copy()
+    yearly_display['Total Flights'] = yearly_display['flights'].apply(lambda x: f"{x:,}")
+    yearly_display = yearly_display[['Year', 'avg_delay', 'delay_rate', 'cancel_rate', 'Total Flights']]
+    yearly_display.columns = ['Year', 'Avg Delay (min)', 'Delay Rate (%)', 'Cancel Rate (%)', 'Total Flights']
+    yearly_display = yearly_display.round(2)
+    st.dataframe(yearly_display, use_container_width=True, hide_index=True)
+    
+    # Pre vs Post COVID analysis
+    st.markdown("### Pre-Pandemic vs Pandemic Period")
+    
+    pre_covid = df[df['Year'].isin([2018, 2019])]
+    covid = df[df['Year'].isin([2020, 2021])]
+    post_covid = df[df['Year'] == 2022] if 2022 in df['Year'].values else None
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("#### 📅 Pre-Pandemic (2018-2019)")
+        pre_stats = {
+            'Avg Delay': f"{pre_covid['ArrDelayMinutes'].mean():.1f} min",
+            'Delay Rate': f"{pre_covid['IsArrDelayed'].mean() * 100:.1f}%",
+            'Cancel Rate': f"{pre_covid['Cancelled'].mean() * 100:.2f}%",
+            'Flights': f"{len(pre_covid):,}"
+        }
+        for key, val in pre_stats.items():
+            st.metric(key, val)
+    
+    with col2:
+        st.markdown("#### 🦠 Pandemic (2020-2021)")
+        covid_stats = {
+            'Avg Delay': f"{covid['ArrDelayMinutes'].mean():.1f} min",
+            'Delay Rate': f"{covid['IsArrDelayed'].mean() * 100:.1f}%",
+            'Cancel Rate': f"{covid['Cancelled'].mean() * 100:.2f}%",
+            'Flights': f"{len(covid):,}"
+        }
+        for key, val in covid_stats.items():
+            st.metric(key, val)
+    
+    with col3:
+        if post_covid is not None and len(post_covid) > 0:
+            st.markdown("#### ✈️ Recovery (2022)")
+            post_stats = {
+                'Avg Delay': f"{post_covid['ArrDelayMinutes'].mean():.1f} min",
+                'Delay Rate': f"{post_covid['IsArrDelayed'].mean() * 100:.1f}%",
+                'Cancel Rate': f"{post_covid['Cancelled'].mean() * 100:.2f}%",
+                'Flights': f"{len(post_covid):,}"
+            }
+            for key, val in post_stats.items():
+                st.metric(key, val)
+        else:
+            st.info("2022 data not available in this sample")
+    
+    st.success("""
+    **💡 Key Insight**: 
+    - **2018-2019**: Pre-pandemic baseline shows typical delay patterns
+    - **2020-2021**: Dramatic reduction in flight volume, but delays persisted due to operational challenges. Perceptible increase in cancellations also.
+    - **2022**: Recovery period showing return to pre-pandemic patterns
+    - **Year is a strong predictor** in our model because it captures these systemic changes
+    - Understanding year-over-year trends helps contextualize current delay predictions
     """)
 
 st.markdown("---")

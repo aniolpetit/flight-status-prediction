@@ -212,6 +212,16 @@ with tab1:
             "The model predicts whether the flight will arrive **>15 minutes late** "
             "using only pre-departure information."
         )
+        
+        # Threshold selector
+        threshold_mode = st.radio(
+            "Prediction Threshold",
+            ["Default (0.5)", "High-Recall (0.4)"],
+            help="Default (0.5): Balanced precision/recall. High-Recall (0.4): Catches more delays but with more false positives.",
+            horizontal=True
+        )
+        
+        selected_threshold = 0.4 if threshold_mode == "High-Recall (0.4)" else 0.5
 
         predict_button = st.button("🚀 Predict Delay Risk", type="primary")
 
@@ -282,7 +292,8 @@ with tab1:
             
             # Predict
             proba_delay = float(model.predict_proba(X_input_array)[0, 1])
-            pred_label = int(model.predict(X_input_array)[0])
+            # Use selected threshold for prediction
+            pred_label = 1 if proba_delay >= selected_threshold else 0
             
             # Save to session state for Explainability page
             st.session_state.prediction_features = {
@@ -371,10 +382,6 @@ with tab1:
             """
         )
         
-        # Add button to explain this prediction
-        st.markdown("---")
-        if st.button("🔍 Explain This Prediction", type="secondary", use_container_width=True):
-            st.info("💡 Navigate to the **🔍 Model Explainability** page to see detailed SHAP explanations for this prediction!")
 
     else:
         st.info("👈 Fill in the flight details and click **Predict Delay Risk**")
@@ -391,6 +398,44 @@ with tab2:
     elif not isinstance(metrics, dict) or 'accuracy_default_thr' not in metrics:
         st.warning("Metrics file is incomplete or corrupted. Please re-train the model.")
     else:
+        # Design explanations - moved to beginning
+        with st.expander("🔧 About the Model Design", expanded=True):
+            st.markdown("""
+            ### Model Design Decisions
+            
+            **1. Training Set Balancing Strategy**
+            - The training set uses **oversampling** of delayed flights to balance classes (50/50 split)
+            - This addresses class imbalance (only ~17% delayed in real data)
+            - The test set maintains the **real-world distribution** (unbalanced) for realistic evaluation
+            - This approach improves model's ability to learn delay patterns without overfitting to majority class
+            
+            **2. Pre-Departure Features Only**
+            - The model uses **only features available before departure** (no data leakage)
+            - Excluded features: `DepDelay`, `TaxiOut`, `TaxiIn`, `AirTime` (post-departure)
+            - This ensures the model can be used for **real-world prediction** at booking/scheduling time
+            - Features include: airline, route, scheduled time, date, distance
+            
+            **3. Threshold Selection**
+            - **Default threshold (0.5)**: Balanced precision/recall trade-off
+            - **High-recall threshold (0.4)**: Prioritizes catching more delays (higher recall)
+            - Threshold choice depends on use case:
+              - Default: General prediction, balanced approach
+              - High-recall: When missing delays is costly (e.g., passenger notifications)
+            
+            **4. Model Selection Process**
+            - Evaluated multiple candidates: XGBoost (various configs) and Random Forest
+            - Selected best model based on **ROC-AUC on validation set**
+            - Final model trained on full balanced training data
+            - Model type: **XGBoost** (gradient boosting ensemble)
+            
+            **5. Evaluation Strategy**
+            - Model evaluated on **real-world distribution** test set (unbalanced)
+            - Metrics reported for both default and high-recall thresholds
+            - ROC-AUC provides threshold-independent performance measure
+            """)
+        
+        st.markdown("---")
+        
         # Show threshold comparison
         st.subheader("📊 Performance at Different Thresholds")
         

@@ -68,8 +68,8 @@ with col1:
     
     - **📊 Explore Data**: Interactively filter and visualize flight delay patterns with customizable charts
     - **💡 Key Insights**: Discover curated findings and stories from our exploratory data analysis
-    - **🤖 Predict Delays** *(Coming Soon)*: Use machine learning to predict flight delays
-    - **🔍 Model Explainability** *(Coming Soon)*: Understand what drives delay predictions
+    - **🤖 Predict Delays**: Use machine learning to predict flight delays
+    - **🔍 Model Explainability**: Understand what drives delay predictions
     
     ### 📈 Dataset Overview:
     
@@ -79,6 +79,11 @@ with col1:
     - Cancellations and diversions
     - Airlines, routes, and airports
     - Temporal patterns (time of day, day of week, seasonality)
+    
+    **📊 Data Note**: The dataset has been sampled using reservoir sampling to ensure 
+    representative distribution while maintaining computational efficiency. The sample 
+    accurately represents the full dataset's patterns and distributions, though it is 
+    not the complete dataset.
     """)
 
 with col2:
@@ -130,7 +135,7 @@ with nav_col3:
 with nav_col4:
     st.markdown("""
     ### 🤖 Model & Explainability
-    *Coming soon*
+    Predict delays and understand model decisions
     """)
 
 st.markdown("---")
@@ -138,8 +143,8 @@ st.markdown("---")
 # Footer
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 2rem 0;'>
-    <p>Built with Streamlit | Data from US DOT Bureau of Transportation Statistics</p>
-    <p>Visual Analytics Final Project | 2024</p>
+    <p>Built with Streamlit</p>
+    <p>Visual Analytics Final Project | 2025</p>
 </div>
 """, unsafe_allow_html=True)
 
