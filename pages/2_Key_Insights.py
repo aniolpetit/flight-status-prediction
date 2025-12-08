@@ -179,6 +179,7 @@ elif insight_section == "1️⃣ The Delay Paradox":
     
     # Category breakdown
     st.markdown("### Breaking Down the Categories")
+    st.caption("Categories: Early (<0), On Time (0), Small (1-15), Moderate (16-60), Large (61-180), Very Large (>180) minutes")
     
     category_counts = df['ArrDelayCategory'].value_counts()
     category_pct = (category_counts / len(df) * 100).round(1)
@@ -859,7 +860,7 @@ elif insight_section == "6️⃣ Year-over-Year Trends":
     st.success("""
     **💡 Key Insight**: 
     - **2018-2019**: Pre-pandemic baseline shows typical delay patterns
-    - **2020-2021**: Dramatic reduction in flight volume, but delays persisted due to operational challenges. Perceptible increase in cancellations also.
+    - **2020-2021**: Dramatic reduction in flight volume, delays persisted but in less magnitude, probably due to less airport congestion and more efficiency in the little amount of flights there were. However, there was a noticeable increase in cancellations during that period.
     - **2022**: Recovery period showing return to pre-pandemic patterns
     - **Year is a strong predictor** in our model because it captures these systemic changes
     - Understanding year-over-year trends helps contextualize current delay predictions

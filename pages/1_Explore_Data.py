@@ -352,6 +352,8 @@ elif viz_type == "Route Analysis":
     st.markdown("### Route Performance Analysis")
     
     route_agg = aggregate_by_route(df_filtered, min_flights=50)
+    if 'cancel_rate' not in route_agg.columns:
+        route_agg['cancel_rate'] = 0.0
     
     col1, col2 = st.columns(2)
     

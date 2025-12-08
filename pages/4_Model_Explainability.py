@@ -212,8 +212,7 @@ with tab1:
 with tab2:
     st.header("🎯 Local Explanations - Individual Predictions")
     st.markdown("""
-    Understand why the model made a specific prediction. Explain a prediction from the 
-    **Predict Delays** page or select a test sample.
+    Understand why the model made a specific prediction. Explain your flight prediction (from the Predict Delays page) or pick a test sample.
     """)
     
     if shap_available and shap_data is not None:
@@ -223,9 +222,15 @@ with tab2:
         custom_features = None
         
         if 'prediction_features' in st.session_state and st.session_state.prediction_features is not None:
-            st.info("💡 Explaining your prediction from the Predict Delays page!")
-            use_custom_prediction = True
             custom_features = st.session_state.prediction_features
+            origin = custom_features.get('origin', 'Origin')
+            dest = custom_features.get('dest', 'Destination')
+            month_name = custom_features.get('month_name')
+            day_of_month = custom_features.get('day_of_month')
+            year = custom_features.get('year')
+            date_str = f" on {month_name} {day_of_month}, {year}" if (month_name and day_of_month and year) else ""
+            st.info(f"💡 Explaining your prediction for your flight from **{origin}** to **{dest}**{date_str}.")
+            use_custom_prediction = True
             # We'll compute SHAP for this custom prediction below
         
         # Select a sample to explain
@@ -574,10 +579,9 @@ with tab3:
     
     st.info("""
     **📝 Note on CRSDepTime Format**: 
-    CRSDepTime uses HHMM format (24-hour time):
-    - Example: 1430 = 2:30 PM (14:30)
-    - Example: 2359 = 11:59 PM (23:59)
-    - Range: 1 to 2359
+    CRSDepTime uses HHMM format (24-hour time). We provide hour/minute selectors to avoid invalid times.
+    - Example: 14:30 -> 1430
+    - Example: 23:59 -> 2359
     """)
     
     if shap_available and shap_data is not None:
@@ -619,8 +623,9 @@ with tab3:
                 'Importance': metrics['feature_importances']
             }).sort_values('Importance', ascending=False)
             
-            # Filter out Month (keep only MonthName for readability)
+            # Filter out Month (keep only MonthName for readability) and Quarter (derived from Month)
             top_features = feat_imp_df.head(10)['Feature'].tolist()
+            top_features = [f for f in top_features if f != 'Quarter']
             if 'Month' in top_features and 'MonthName' in top_features:
                 top_features = [f for f in top_features if f != 'Month']  # Remove Month, keep MonthName
             elif 'Month' in top_features:
@@ -735,21 +740,18 @@ with tab3:
                         feat_max_orig = convert_to_original(feat, feat_max_enc)
                         feat_median_orig = (feat_min_orig + feat_max_orig) / 2
                     
-                    # Special handling for CRSDepTime (must be int)
+                    # Special handling for CRSDepTime (use hour/minute selectors to avoid invalid values)
                     if feat == 'CRSDepTime':
-                        # Convert to readable format for display
-                        crs_hour = int(original_value) // 100
-                        crs_min = int(original_value) % 100
-                        readable_time = f"{crs_hour:02d}:{crs_min:02d}"
+                        crs_hour = max(0, min(23, int(original_value) // 100 if not np.isnan(original_value) else 12))
+                        crs_min = max(0, min(59, int(original_value) % 100 if not np.isnan(original_value) else 0))
                         
-                        new_value_orig = st.slider(
-                            f"{feat} (Format: HHMM, e.g., 1430 = 14:30, 2359 = 23:59)",
-                            min_value=int(feat_min_orig),
-                            max_value=int(feat_max_orig),
-                            value=int(original_value),
-                            step=1,  # Must be int for int sliders
-                            help=f"Current: {int(original_value)} ({readable_time})"
-                        )
+                        col_h, col_m = st.columns(2)
+                        with col_h:
+                            crs_hour_sel = st.slider("Departure Hour (0-23)", 0, 23, crs_hour, step=1)
+                        with col_m:
+                            crs_min_sel = st.slider("Departure Minute (0-59)", 0, 59, crs_min, step=5)
+                        
+                        new_value_orig = crs_hour_sel * 100 + crs_min_sel
                     else:
                         # Determine step size based on feature type
                         if feat in ['Year']:

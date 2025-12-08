@@ -196,6 +196,13 @@ def aggregate_by_route(df, min_flights=100):
         total_flights=('IsArrDelayed', 'size')
     ).reset_index()
 
+    # Add cancellation rate when available; fallback to 0 to avoid plot errors
+    if "Cancelled" in df.columns:
+        cancel_rate = df.groupby(['Origin', 'Dest'])['Cancelled'].mean().reset_index(name='cancel_rate')
+        agg = agg.merge(cancel_rate, on=['Origin', 'Dest'], how='left')
+    else:
+        agg['cancel_rate'] = 0.0
+
     agg = agg[agg['total_flights'] >= min_flights]
     agg['Route'] = agg['Origin'] + ' → ' + agg['Dest']
     return agg.sort_values('avg_arr_delay', ascending=False)
