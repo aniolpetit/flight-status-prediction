@@ -52,7 +52,7 @@ def main() -> None:
 
     csv_files = sorted(
         f for f in os.listdir(DATA_DIR)
-        if f.endswith(".csv") and f != OUTPUT_FILENAME
+        if f.endswith(".csv") and f != OUTPUT_FILENAME and f.startswith("Combined")
     )
 
     if not csv_files:

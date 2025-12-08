@@ -176,6 +176,7 @@ def aggregate_by_airline(df, min_flights=1000):
         median_dep_delay=('DepDelayMinutes', 'median'),
         arr_delay_rate=('IsArrDelayed', 'mean'),
         dep_delay_rate=('IsDepDelayed', 'mean'),
+        cancel_rate=('Cancelled', 'mean'),
         total_flights=('IsArrDelayed', 'size')
     ).reset_index()
 

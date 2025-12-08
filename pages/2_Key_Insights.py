@@ -363,6 +363,13 @@ elif insight_section == "3️⃣ Airline Performance Gap":
     """)
     
     airline_stats = aggregate_by_airline(df, min_flights=5000)
+    # Ensure cancellation rate exists (some datasets may lack Cancelled column)
+    if 'cancel_rate' not in airline_stats.columns:
+        if 'Cancelled' in df.columns:
+            cancel_rate = df.groupby('Airline')['Cancelled'].mean().reset_index(name='cancel_rate')
+            airline_stats = airline_stats.merge(cancel_rate, on='Airline', how='left')
+        else:
+            airline_stats['cancel_rate'] = 0.0
     
     st.markdown("### Top and Bottom Performers")
     
@@ -504,7 +511,7 @@ elif insight_section == "3️⃣ Airline Performance Gap":
     """)
 
 # INSIGHT 4: Seasonal Patterns
-elif insight_section == "5️⃣ Seasonal Patterns":
+elif insight_section == "4️⃣ Seasonal Patterns":
     st.markdown("""
     ## 4️⃣ Seasonal Patterns: Summer and Winter Challenges
     
